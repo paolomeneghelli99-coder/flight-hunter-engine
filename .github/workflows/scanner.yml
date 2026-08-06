@@ -7,6 +7,12 @@ jobs:
   scanner:
     runs-on: ubuntu-latest
 
+    env:
+      FH_BACKEND_URL: ${{ secrets.FH_BACKEND_URL }}
+      FH_PUBLISHABLE_KEY: ${{ secrets.FH_PUBLISHABLE_KEY }}
+      FH_EMAIL: ${{ secrets.FH_EMAIL }}
+      FH_PASSWORD: ${{ secrets.FH_PASSWORD }}
+
     steps:
       - name: Scarica codice
         uses: actions/checkout@v5
