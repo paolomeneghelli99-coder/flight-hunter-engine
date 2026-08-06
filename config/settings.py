@@ -1,26 +1,42 @@
+"""Configurazione letta da variabili d'ambiente (GitHub Secrets)."""
+
 import os
+from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-FH_BACKEND_URL = (os.getenv("FH_BACKEND_URL") or "").rstrip("/")
-FH_PUBLISHABLE_KEY = os.getenv("FH_PUBLISHABLE_KEY")
+DEFAULT_IMPORT_URL = "https://flight-hunter.lovable.app/api/public/offers/import"
 
-# Endpoint di importazione di Flight Hunter (override possibile per l'ambiente di anteprima)
-FLIGHT_HUNTER_API_URL = os.getenv(
-    "FH_IMPORT_URL",
-    "https://flight-hunter.lovable.app/api/public/offers/import",
-)
+# Aeroporti di partenza monitorati da Flight Hunter
+ORIGINI = ["VRN", "BGY", "VCE", "TSF", "BLQ", "MXP", "TRN", "PSA"]
 
-# Il workflow GitHub Actions esporta il JWT come FH_ACCESS_TOKEN.
-# FH_TOKEN resta accettato come fallback per esecuzioni locali.
-FLIGHT_HUNTER_API_TOKEN = os.getenv("FH_ACCESS_TOKEN") or os.getenv("FH_TOKEN")
 
-# Connettore associato all'import: kiwi_tequila | amadeus | ryanair | wizzair | easyjet | volotea
-FLIGHT_HUNTER_CONNECTOR = os.getenv("FH_CONNECTOR", "ryanair")
+def _env(nome: str, default: str = "") -> str:
+    return (os.environ.get(nome) or default).strip()
 
-# Limite imposto dal backend: massimo 500 offerte per richiesta
-MAX_OFFERS_PER_REQUEST = 500
 
-REQUEST_TIMEOUT = int(os.getenv("FH_REQUEST_TIMEOUT", "60"))
+@dataclass
+class Settings:
+    import_url: str = field(default_factory=lambda: _env("FH_IMPORT_URL", DEFAULT_IMPORT_URL))
+    access_token: str = field(default_factory=lambda: _env("FH_ACCESS_TOKEN"))
+    connettore: str = field(default_factory=lambda: _env("FH_CONNECTOR", "ryanair"))
+    fonte_dato: str = field(default_factory=lambda: _env("FH_FONTE_DATO", "scanner"))
+    valuta: str = field(default_factory=lambda: _env("FH_VALUTA", "EUR"))
+    origini: list = field(default_factory=lambda: [
+        a.strip().upper() for a in _env("FH_ORIGINI", ",".join(ORIGINI)).split(",") if a.strip()
+    ])
+    giorni_anticipo_max: int = field(default_factory=lambda: int(_env("FH_GIORNI_MAX", "120")))
+    prezzo_massimo: float = field(default_factory=lambda: float(_env("FH_PREZZO_MAX", "80")))
+    batch_size: int = field(default_factory=lambda: min(int(_env("FH_BATCH_SIZE", "200")), 500))
+    timeout: int = field(default_factory=lambda: int(_env("FH_TIMEOUT", "30")))
+
+    def validate(self) -> None:
+        if not self.access_token:
+            raise SystemExit("FH_ACCESS_TOKEN mancante: il workflow deve ottenere il JWT prima di eseguire main.py")
+        if not self.import_url:
+            raise SystemExit("FH_IMPORT_URL mancante")
+
+
+settings = Settings()
