@@ -24,29 +24,46 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Installa dipendenze
+      - name: Installa jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Installa dipendenze Python
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Ottieni access token
+      - name: Ottieni access token Flight Hunter
         env:
           FH_BACKEND_URL: ${{ secrets.FH_BACKEND_URL }}
           FH_PUBLISHABLE_KEY: ${{ secrets.FH_PUBLISHABLE_KEY }}
           FH_EMAIL: ${{ secrets.FH_EMAIL }}
           FH_PASSWORD: ${{ secrets.FH_PASSWORD }}
         run: |
-          RESPONSE=$(curl -sS -X POST "$FH_BACKEND_URL/auth/v1/token?grant_type=password" \
-            -H "apikey: $FH_PUBLISHABLE_KEY" \
+          set -euo pipefail
+
+          RESPONSE=$(curl -sS -X POST \
+            "${FH_BACKEND_URL}/auth/v1/token?grant_type=password" \
+            -H "apikey: ${FH_PUBLISHABLE_KEY}" \
             -H "Content-Type: application/json" \
-            -d "{\"email\":\"$FH_EMAIL\",\"password\":\"$FH_PASSWORD\"}")
+            -d "$(jq -n \
+              --arg email "$FH_EMAIL" \
+              --arg password "$FH_PASSWORD" \
+              '{email: $email, password: $password}')")
+
           TOKEN=$(echo "$RESPONSE" | jq -r '.access_token // empty')
+
           if [ -z "$TOKEN" ]; then
-            echo "Login fallito: $(echo "$RESPONSE" | jq -r '.error_description // .msg // .')"
+            echo "Login fallito:"
+            echo "$RESPONSE" | jq .
             exit 1
           fi
+
           echo "::add-mask::$TOKEN"
           echo "FH_ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+          echo "Token ottenuto correttamente"
 
       - name: Esegui scanner e importa offerte
         env:
@@ -56,4 +73,5 @@ jobs:
           FH_FONTE_DATO: scanner
           FH_PREZZO_MAX: "80"
           FH_GIORNI_MAX: "120"
-        run: python main.py
+        run: |
+          python main.py
