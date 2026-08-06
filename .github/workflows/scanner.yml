@@ -1,49 +1,69 @@
 name: Flight Hunter Scanner
 
 on:
+  schedule:
+    - cron: "0 */6 * * *"
   workflow_dispatch:
 
-jobs:
-  scanner:
-    runs-on: ubuntu-latest
+concurrency:
+  group: flight-hunter-scanner
+  cancel-in-progress: false
 
-    env:
-      FH_BACKEND_URL: ${{ secrets.FH_BACKEND_URL }}
-      FH_PUBLISHABLE_KEY: ${{ secrets.FH_PUBLISHABLE_KEY }}
-      FH_EMAIL: ${{ secrets.FH_EMAIL }}
-      FH_PASSWORD: ${{ secrets.FH_PASSWORD }}
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Scarica codice
+      - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Configura Python
+      - name: Setup Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: "pip"
 
-      - name: Installa dipendenze
+      - name: Install dependencies
         run: |
-          pip install -r requirements.txt
-          sudo apt-get update
-          sudo apt-get install -y jq
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install requests python-dateutil beautifulsoup4 lxml
+          fi
 
-       - name: Login Flight Hunter
+      - name: Get access token
+        env:
+          FH_BACKEND_URL: ${{ secrets.FH_BACKEND_URL }}
+          FH_PUBLISHABLE_KEY: ${{ secrets.FH_PUBLISHABLE_KEY }}
+          FH_EMAIL: ${{ secrets.FH_EMAIL }}
+          FH_PASSWORD: ${{ secrets.FH_PASSWORD }}
         run: |
-          RESPONSE=$(curl -s -X POST \
-          "${{ secrets.FH_BACKEND_URL }}/auth/v1/token?grant_type=password" \
-          -H "apikey: ${{ secrets.FH_PUBLISHABLE_KEY }}" \
-          -H "Content-Type: application/json" \
-          -d '{"email":"${{ secrets.FH_EMAIL }}","password":"${{ secrets.FH_PASSWORD }}"}')
+          set -euo pipefail
+          RESPONSE=$(curl -sS -X POST \
+            "${FH_BACKEND_URL}/auth/v1/token?grant_type=password" \
+            -H "apikey: ${FH_PUBLISHABLE_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg email "$FH_EMAIL" --arg password "$FH_PASSWORD" \
+                  '{email: $email, password: $password}')")
 
-          echo "$RESPONSE"
+          TOKEN=$(printf '%s' "$RESPONSE" | jq -r '.access_token // empty')
 
-          TOKEN=$(echo "$RESPONSE" | jq -r .access_token)
-
-          if [ "$TOKEN" = "null" ]; then
-            echo "Errore: token non ricevuto"
+          if [ -z "$TOKEN" ]; then
+            echo "Autenticazione fallita:"
+            printf '%s' "$RESPONSE" | jq -r '.error_description // .msg // .error // "errore sconosciuto"'
             exit 1
           fi
 
-          echo "Token ottenuto correttamente"
-          echo "FH_TOKEN=$TOKEN" >> $GITHUB_ENV
+          echo "::add-mask::$TOKEN"
+          echo "FH_ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Run scanner
+        env:
+          FH_ACCESS_TOKEN: ${{ env.FH_ACCESS_TOKEN }}
+          FH_IMPORT_URL: https://flight-hunter.lovable.app/api/public/offers/import
+          FH_BACKEND_URL: ${{ secrets.FH_BACKEND_URL }}
+          FH_PUBLISHABLE_KEY: ${{ secrets.FH_PUBLISHABLE_KEY }}
+        run: python main.py
+
