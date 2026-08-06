@@ -1,80 +1,83 @@
-"""Interfaccia comune a tutti gli scanner compagnia."""
+"""Modello offerta e classe base degli scanner."""
 
-from __future__ import annotations
+from dataclasses import dataclass
+from typing import Optional
 
-import logging
-from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass
-from datetime import date
+from config.settings import settings
 
-logger = logging.getLogger(__name__)
-
-ALLOWED_FONTE_DATO = {"reale", "api", "import", "diretta", "scanner"}
+FONTI_VALIDE = {"reale", "api", "import", "diretta", "scanner"}
 
 
-@dataclass(slots=True)
-class Offer:
-    """Offerta nel formato atteso da POST /api/public/offers/import."""
-
+@dataclass
+class Offerta:
     aeroporto_partenza: str
     destinazione: str
     compagnia: str
     prezzo: float
-    data_partenza: str
+    data_partenza: str                    # YYYY-MM-DD
     valuta: str = "EUR"
-    data_ritorno: str | None = None
-    link_prenotazione: str | None = None
-    fonte_dato: str = "diretta"
-    opportunity_score: int | None = None
+    data_ritorno: Optional[str] = None    # YYYY-MM-DD oppure None
+    link_prenotazione: Optional[str] = None
+    fonte_dato: str = "scanner"
+    opportunity_score: Optional[int] = None
 
-    def __post_init__(self) -> None:
-        self.aeroporto_partenza = self.aeroporto_partenza.strip().upper()[:8]
-        self.destinazione = self.destinazione.strip()[:80]
-        self.compagnia = self.compagnia.strip()[:60]
-        self.valuta = self.valuta.strip().upper()[:3]
-        self.prezzo = round(float(self.prezzo), 2)
-
-        if not 3 <= len(self.aeroporto_partenza) <= 8:
-            raise ValueError(f"IATA non valido: {self.aeroporto_partenza}")
-        if not 0 < self.prezzo <= 10000:
-            raise ValueError(f"Prezzo fuori range: {self.prezzo}")
-        if self.fonte_dato not in ALLOWED_FONTE_DATO:
-            raise ValueError(f"fonte_dato non valido: {self.fonte_dato}")
-        date.fromisoformat(self.data_partenza)
-        if self.data_ritorno:
-            date.fromisoformat(self.data_ritorno)
-        if self.link_prenotazione and len(self.link_prenotazione) > 1000:
-            self.link_prenotazione = None
+    def valida(self) -> bool:
+        if not (3 <= len(self.aeroporto_partenza) <= 8):
+            return False
+        if not (2 <= len(self.destinazione) <= 80):
+            return False
+        if not (2 <= len(self.compagnia) <= 60):
+            return False
+        if not (0 < float(self.prezzo) <= 10000):
+            return False
+        if len(self.data_partenza) != 10:
+            return False
+        if self.fonte_dato not in FONTI_VALIDE:
+            return False
+        return True
 
     def to_payload(self) -> dict:
-        return asdict(self)
+        payload = {
+            "aeroporto_partenza": self.aeroporto_partenza.upper(),
+            "destinazione": self.destinazione,
+            "compagnia": self.compagnia,
+            "prezzo": round(float(self.prezzo), 2),
+            "valuta": (self.valuta or "EUR").upper()[:3],
+            "data_partenza": self.data_partenza,
+            "data_ritorno": self.data_ritorno,
+            "fonte_dato": self.fonte_dato,
+        }
+        if self.link_prenotazione:
+            payload["link_prenotazione"] = self.link_prenotazione[:1000]
+        if self.opportunity_score is not None:
+            payload["opportunity_score"] = max(0, min(100, int(self.opportunity_score)))
+        return payload
 
 
-class BaseScanner(ABC):
-    """Base per ogni compagnia. Sottoclasse -> implementa scan()."""
+class BaseScanner:
+    nome = "base"
+    compagnia = "Sconosciuta"
 
-    #: slug del connettore lato Flight Hunter
-    #: kiwi_tequila | amadeus | ryanair | wizzair | easyjet | volotea
-    connector_slug: str = ""
-    #: nome compagnia mostrato nelle offerte
-    airline: str = ""
-    #: fonte_dato usata dalle offerte prodotte
-    fonte_dato: str = "diretta"
+    def __init__(self, connector=None):
+        self.connector = connector
+        self.origini = settings.origini
+        self.prezzo_massimo = settings.prezzo_massimo
 
-    def __init__(self, airports: list[str], days_ahead: int = 90) -> None:
-        self.airports = [a.strip().upper() for a in airports]
-        self.days_ahead = days_ahead
+    def scan(self) -> list:
+        """Da implementare: restituisce una lista di Offerta."""
+        raise NotImplementedError
 
-    @abstractmethod
-    def scan(self) -> list[Offer]:
-        """Restituisce le offerte trovate. Nessun dato simulato."""
-
-    def safe_scan(self) -> list[Offer]:
-        """Esegue scan() isolando gli errori: un connettore rotto non blocca gli altri."""
-        try:
-            offers = self.scan()
-        except Exception as error:  # noqa: BLE001
-            logger.error("[%s] scan fallito: %s", self.airline or self.connector_slug, error)
-            return []
-        logger.info("[%s] offerte trovate: %d", self.airline, len(offers))
-        return offers
+    def run(self) -> list:
+        offerte = [o for o in self.scan() if o.valida() and o.prezzo <= self.prezzo_massimo]
+        viste = set()
+        uniche = []
+        for o in offerte:
+            chiave = (o.aeroporto_partenza, o.destinazione, o.data_partenza, o.prezzo)
+            if chiave in viste:
+                continue
+            viste.add(chiave)
+            uniche.append(o)
+        uniche.sort(key=lambda o: o.prezzo)
+        if self.connector:
+            self.connector.close()
+        return uniche
