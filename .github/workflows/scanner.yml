@@ -1,0 +1,25 @@
+name: Flight Hunter Scanner
+
+on:
+  workflow_dispatch:
+
+jobs:
+  scanner:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Scarica codice
+        uses: actions/checkout@v4
+
+      - name: Configura Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installa dipendenze
+        run: |
+          pip install -r requirements.txt
+
+      - name: Avvia Flight Hunter Engine
+        run: |
+          python main.py
