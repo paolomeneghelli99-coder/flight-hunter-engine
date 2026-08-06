@@ -19,6 +19,20 @@ jobs:
       - name: Installa dipendenze
         run: |
           pip install -r requirements.txt
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Login Flight Hunter
+        run: |
+          TOKEN=$(curl -s -X POST \
+          "${{ secrets.FH_BACKEND_URL }}/auth/v1/token?grant_type=password" \
+          -H "apikey: ${{ secrets.FH_PUBLISHABLE_KEY }}" \
+          -H "Content-Type: application/json" \
+          -d '{"email":"${{ secrets.FH_EMAIL }}","password":"${{ secrets.FH_PASSWORD }}"}' \
+          | jq -r .access_token)
+
+          echo "TOKEN ottenuto"
+          echo "FH_TOKEN=$TOKEN" >> $GITHUB_ENV
 
       - name: Avvia Flight Hunter Engine
         run: |
