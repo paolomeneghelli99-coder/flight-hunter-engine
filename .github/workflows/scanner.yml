@@ -22,48 +22,38 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-          cache: "pip"
+          cache: pip
 
-      - name: Install dependencies
+      - name: Installa dipendenze
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          else
-            pip install requests python-dateutil beautifulsoup4 lxml
-          fi
+          pip install -r requirements.txt
 
-      - name: Get access token
+      - name: Ottieni access token
         env:
           FH_BACKEND_URL: ${{ secrets.FH_BACKEND_URL }}
           FH_PUBLISHABLE_KEY: ${{ secrets.FH_PUBLISHABLE_KEY }}
           FH_EMAIL: ${{ secrets.FH_EMAIL }}
           FH_PASSWORD: ${{ secrets.FH_PASSWORD }}
         run: |
-          set -euo pipefail
-          RESPONSE=$(curl -sS -X POST \
-            "${FH_BACKEND_URL}/auth/v1/token?grant_type=password" \
-            -H "apikey: ${FH_PUBLISHABLE_KEY}" \
+          RESPONSE=$(curl -sS -X POST "$FH_BACKEND_URL/auth/v1/token?grant_type=password" \
+            -H "apikey: $FH_PUBLISHABLE_KEY" \
             -H "Content-Type: application/json" \
-            -d "$(jq -n --arg email "$FH_EMAIL" --arg password "$FH_PASSWORD" \
-                  '{email: $email, password: $password}')")
-
-          TOKEN=$(printf '%s' "$RESPONSE" | jq -r '.access_token // empty')
-
+            -d "{\"email\":\"$FH_EMAIL\",\"password\":\"$FH_PASSWORD\"}")
+          TOKEN=$(echo "$RESPONSE" | jq -r '.access_token // empty')
           if [ -z "$TOKEN" ]; then
-            echo "Autenticazione fallita:"
-            printf '%s' "$RESPONSE" | jq -r '.error_description // .msg // .error // "errore sconosciuto"'
+            echo "Login fallito: $(echo "$RESPONSE" | jq -r '.error_description // .msg // .')"
             exit 1
           fi
-
           echo "::add-mask::$TOKEN"
           echo "FH_ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
 
-      - name: Run scanner
+      - name: Esegui scanner e importa offerte
         env:
           FH_ACCESS_TOKEN: ${{ env.FH_ACCESS_TOKEN }}
           FH_IMPORT_URL: https://flight-hunter.lovable.app/api/public/offers/import
-          FH_BACKEND_URL: ${{ secrets.FH_BACKEND_URL }}
-          FH_PUBLISHABLE_KEY: ${{ secrets.FH_PUBLISHABLE_KEY }}
+          FH_CONNECTOR: ryanair
+          FH_FONTE_DATO: scanner
+          FH_PREZZO_MAX: "80"
+          FH_GIORNI_MAX: "120"
         run: python main.py
-
