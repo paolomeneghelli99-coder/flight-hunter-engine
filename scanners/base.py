@@ -7,7 +7,6 @@ from config.settings import settings
 
 
 FONTI_VALIDE = {"reale", "api", "import", "diretta", "scanner"}
-TIPI_VIAGGIO_VALIDI = {"solo_andata", "andata_ritorno"}
 
 
 @dataclass
@@ -17,12 +16,24 @@ class Offerta:
     compagnia: str
     prezzo: float
     data_partenza: str
+
     valuta: str = "EUR"
     data_ritorno: Optional[str] = None
+
+    # nuovi campi orari
+    ora_partenza: Optional[str] = None
+    ora_arrivo: Optional[str] = None
+    ora_partenza_ritorno: Optional[str] = None
+    ora_arrivo_ritorno: Optional[str] = None
+
+    # durata in minuti
+    durata_andata: Optional[int] = None
+    durata_ritorno: Optional[int] = None
+
     link_prenotazione: Optional[str] = None
     fonte_dato: str = "scanner"
     opportunity_score: Optional[int] = None
-    tipo_viaggio: str = "solo_andata"
+
 
     def valida(self) -> bool:
         if not (3 <= len(self.aeroporto_partenza) <= 8):
@@ -43,10 +54,8 @@ class Offerta:
         if self.fonte_dato not in FONTI_VALIDE:
             return False
 
-        if self.tipo_viaggio not in TIPI_VIAGGIO_VALIDI:
-            return False
-
         return True
+
 
     def to_payload(self) -> dict:
         payload = {
@@ -54,15 +63,38 @@ class Offerta:
             "destinazione": self.destinazione,
             "compagnia": self.compagnia,
             "prezzo": round(float(self.prezzo), 2),
-            "valuta": self.valuta.upper()[:3],
+            "valuta": (self.valuta or "EUR").upper()[:3],
+
             "data_partenza": self.data_partenza,
             "data_ritorno": self.data_ritorno,
+
             "fonte_dato": self.fonte_dato,
-            "tipo_viaggio": self.tipo_viaggio,
         }
+
+
+        # nuovi dati orari
+        if self.ora_partenza:
+            payload["ora_partenza"] = self.ora_partenza
+
+        if self.ora_arrivo:
+            payload["ora_arrivo"] = self.ora_arrivo
+
+        if self.ora_partenza_ritorno:
+            payload["ora_partenza_ritorno"] = self.ora_partenza_ritorno
+
+        if self.ora_arrivo_ritorno:
+            payload["ora_arrivo_ritorno"] = self.ora_arrivo_ritorno
+
+        if self.durata_andata:
+            payload["durata_andata"] = self.durata_andata
+
+        if self.durata_ritorno:
+            payload["durata_ritorno"] = self.durata_ritorno
+
 
         if self.link_prenotazione:
             payload["link_prenotazione"] = self.link_prenotazione[:1000]
+
 
         if self.opportunity_score is not None:
             payload["opportunity_score"] = max(
@@ -70,29 +102,34 @@ class Offerta:
                 min(100, int(self.opportunity_score))
             )
 
+
         return payload
 
 
-class BaseScanner:
 
+class BaseScanner:
     nome = "base"
     compagnia = "Sconosciuta"
+
 
     def __init__(self, connector=None):
         self.connector = connector
         self.origini = settings.origini
         self.prezzo_massimo = settings.prezzo_massimo
-        self.tipo_viaggio = settings.tipo_viaggio
 
-    def scan(self):
+
+    def scan(self) -> list:
         raise NotImplementedError
 
-    def run(self):
+
+    def run(self) -> list:
+
         offerte = [
             o for o in self.scan()
             if o.valida()
             and o.prezzo <= self.prezzo_massimo
         ]
+
 
         viste = set()
         uniche = []
@@ -102,8 +139,7 @@ class BaseScanner:
                 o.aeroporto_partenza,
                 o.destinazione,
                 o.data_partenza,
-                o.prezzo,
-                o.tipo_viaggio
+                o.prezzo
             )
 
             if chiave in viste:
@@ -112,9 +148,12 @@ class BaseScanner:
             viste.add(chiave)
             uniche.append(o)
 
+
         uniche.sort(key=lambda o: o.prezzo)
+
 
         if self.connector:
             self.connector.close()
+
 
         return uniche
