@@ -1,66 +1,45 @@
-"""Flight Hunter Engine — punto di ingresso eseguito da GitHub Actions."""
+"""Flight Hunter Engine — entry point eseguito da GitHub Actions."""
 
 import sys
+import traceback
 
-from config.settings import (
-    FLIGHT_HUNTER_API_TOKEN,
-    FLIGHT_HUNTER_API_URL,
-    FLIGHT_HUNTER_CONNECTOR,
-)
+from config.settings import settings
 from database.importer import import_offers
-
-
-def raccogli_offerte() -> list[dict]:
-    """Raccoglie le offerte reali dalle fonti gratuite.
-
-    Sostituisci il corpo con la tua logica di scraping/parsing.
-    Ogni elemento deve avere questi campi:
-
-        {
-            "aeroporto_partenza": "VRN",      # IATA, 3-8 caratteri
-            "destinazione": "Barcellona",     # 2-80 caratteri
-            "compagnia": "Ryanair",           # 2-60 caratteri
-            "prezzo": 24.99,                  # float > 0 e <= 10000
-            "valuta": "EUR",                  # 3 lettere
-            "data_partenza": "2026-09-14",    # YYYY-MM-DD
-            "data_ritorno": None,             # YYYY-MM-DD oppure None
-            "link_prenotazione": "https://...",
-            "fonte_dato": "diretta",          # reale|api|import|diretta|scanner
-            "opportunity_score": None,        # 0-100 oppure None (lo calcola il backend)
-        }
-    """
-    offerte: list[dict] = []
-
-    # TODO: implementa qui la raccolta reale (una funzione per compagnia).
-    # Esempio:
-    # from scanners.ryanair import scan_ryanair
-    # offerte.extend(scan_ryanair(["VRN", "BGY", "VCE", "TSF", "BLQ", "MXP", "TRN", "PSA"]))
-
-    return offerte
+from scanners import SCANNERS
 
 
 def main() -> int:
-    if not FLIGHT_HUNTER_API_TOKEN:
-        print("FH_ACCESS_TOKEN mancante: il workflow non ha ottenuto il JWT.")
-        return 1
+    settings.validate()
 
-    print(f"Endpoint: {FLIGHT_HUNTER_API_URL}")
-    print(f"Connettore: {FLIGHT_HUNTER_CONNECTOR}")
+    tutte = []
+    for nome, factory in SCANNERS.items():
+        try:
+            scanner = factory()
+            trovate = scanner.run()
+            print(f"[{nome}] offerte trovate: {len(trovate)}")
+            tutte.extend(trovate)
+        except Exception:
+            print(f"[{nome}] errore durante la scansione:", file=sys.stderr)
+            traceback.print_exc()
 
-    offerte = raccogli_offerte()
-    print(f"Offerte raccolte: {len(offerte)}")
-
-    if not offerte:
-        print("Nessuna offerta da importare.")
+    if not tutte:
+        print("Nessuna offerta trovata: niente da importare.")
         return 0
 
-    try:
-        risultato = import_offers(offerte)
-    except Exception as errore:  # noqa: BLE001
-        print(f"Errore durante l'import: {errore}")
-        return 1
+    # deduplica globale
+    viste = set()
+    uniche = []
+    for o in tutte:
+        chiave = (o.aeroporto_partenza, o.destinazione, o.data_partenza, o.prezzo)
+        if chiave in viste:
+            continue
+        viste.add(chiave)
+        uniche.append(o)
 
-    print(f"Offerte importate in Flight Hunter: {risultato['importate']}")
+    uniche.sort(key=lambda o: o.prezzo)
+
+    totale = import_offers([o.to_payload() for o in uniche])
+    print(f"Totale offerte importate: {totale}")
     return 0
 
 
