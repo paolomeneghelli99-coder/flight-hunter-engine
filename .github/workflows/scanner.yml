@@ -69,6 +69,12 @@ jobs:
           FH_FONTE_DATO: scanner
           FH_PREZZO_MAX: "80"
           FH_GIORNI_MAX: "120"
+
+          # Tipo di ricerca:
+          # solo_andata
+          # andata_ritorno
+          FH_TIPO_VIAGGIO: solo_andata
+
         run: |
           echo "Avvio scanner Flight Hunter..."
           python main.py
