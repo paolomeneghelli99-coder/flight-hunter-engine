@@ -28,18 +28,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq
 
-      - name: Login Flight Hunter
+       - name: Login Flight Hunter
         run: |
-          TOKEN=$(curl -s -X POST \
+          RESPONSE=$(curl -s -X POST \
           "${{ secrets.FH_BACKEND_URL }}/auth/v1/token?grant_type=password" \
           -H "apikey: ${{ secrets.FH_PUBLISHABLE_KEY }}" \
           -H "Content-Type: application/json" \
-          -d '{"email":"${{ secrets.FH_EMAIL }}","password":"${{ secrets.FH_PASSWORD }}"}' \
-          | jq -r .access_token)
+          -d '{"email":"${{ secrets.FH_EMAIL }}","password":"${{ secrets.FH_PASSWORD }}"}')
 
-          echo "TOKEN ottenuto"
+          echo "$RESPONSE"
+
+          TOKEN=$(echo "$RESPONSE" | jq -r .access_token)
+
+          if [ "$TOKEN" = "null" ]; then
+            echo "Errore: token non ricevuto"
+            exit 1
+          fi
+
+          echo "Token ottenuto correttamente"
           echo "FH_TOKEN=$TOKEN" >> $GITHUB_ENV
-
-      - name: Avvia Flight Hunter Engine
-        run: |
-          python main.py
