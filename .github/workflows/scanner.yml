@@ -61,6 +61,47 @@ jobs:
 
           echo "Token ottenuto correttamente"
 
+      - name: Test ricerca ritorno Ryanair
+        run: |
+          python - <<'PY'
+          from connectors.base import BaseConnector
+
+          print("===== TEST RITORNO RYANAIR =====")
+
+          c = BaseConnector("test-ryanair")
+
+          risposta = c.get_json(
+              "https://services-api.ryanair.com/farfnd/v4/oneWayFares",
+              params={
+                  "departureAirportIataCode": "BRI",
+                  "outboundDepartureDateFrom": "2026-09-19",
+                  "outboundDepartureDateTo": "2026-10-02",
+                  "currency": "EUR",
+                  "limit": 10,
+                  "offset": 0,
+                  "market": "it-it",
+              }
+          )
+
+          if not risposta:
+              print("NESSUNA RISPOSTA")
+          else:
+              print("Chiavi risposta:")
+              print(risposta.keys())
+
+              fares = risposta.get("fares", [])
+
+              print("Numero voli trovati:", len(fares))
+
+              if fares:
+                  print("Primo risultato:")
+                  print(fares[0])
+
+          c.close()
+
+          print("===== FINE TEST =====")
+          PY
+
       - name: Avvio Flight Hunter Engine
         env:
           FH_ACCESS_TOKEN: ${{ env.FH_ACCESS_TOKEN }}
@@ -69,12 +110,6 @@ jobs:
           FH_FONTE_DATO: scanner
           FH_PREZZO_MAX: "80"
           FH_GIORNI_MAX: "120"
-
-          # Tipo di ricerca:
-          # solo_andata
-          # andata_ritorno
-          FH_TIPO_VIAGGIO: solo_andata
-
         run: |
           echo "Avvio scanner Flight Hunter..."
           python main.py
