@@ -1,12 +1,51 @@
 """Modello offerta e classe base degli scanner."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from config.settings import settings
 
 
 FONTI_VALIDE = {"reale", "api", "import", "diretta", "scanner"}
+
+
+@dataclass
+class ReturnOption:
+    """Singola opzione di ritorno consigliata."""
+
+    data_ritorno: str
+    prezzo: float
+
+    ora_partenza: Optional[str] = None
+    ora_arrivo: Optional[str] = None
+
+    durata: Optional[int] = None
+    notti: Optional[int] = None
+
+    link_prenotazione: Optional[str] = None
+
+    def to_payload(self) -> dict:
+        risultato = {
+            "data_ritorno": self.data_ritorno,
+            "prezzo": round(float(self.prezzo), 2),
+        }
+
+        if self.ora_partenza:
+            risultato["ora_partenza"] = self.ora_partenza
+
+        if self.ora_arrivo:
+            risultato["ora_arrivo"] = self.ora_arrivo
+
+        if self.durata:
+            risultato["durata"] = self.durata
+
+        if self.notti:
+            risultato["notti"] = self.notti
+
+        if self.link_prenotazione:
+            risultato["link_prenotazione"] = self.link_prenotazione
+
+        return risultato
 
 
 @dataclass
@@ -20,22 +59,32 @@ class Offerta:
     valuta: str = "EUR"
     data_ritorno: Optional[str] = None
 
-    # nuovi campi orari
+    # codice aeroporto arrivo (necessario per cercare il ritorno)
+    aeroporto_arrivo: Optional[str] = None
+
+    # orari volo andata
     ora_partenza: Optional[str] = None
     ora_arrivo: Optional[str] = None
+
+    # compatibilità vecchio formato
     ora_partenza_ritorno: Optional[str] = None
     ora_arrivo_ritorno: Optional[str] = None
 
-    # durata in minuti
     durata_andata: Optional[int] = None
     durata_ritorno: Optional[int] = None
 
     link_prenotazione: Optional[str] = None
+
     fonte_dato: str = "scanner"
+
     opportunity_score: Optional[int] = None
+
+    # nuove opzioni di ritorno
+    ritorni: list[ReturnOption] = field(default_factory=list)
 
 
     def valida(self) -> bool:
+
         if not (3 <= len(self.aeroporto_partenza) <= 8):
             return False
 
@@ -58,11 +107,14 @@ class Offerta:
 
 
     def to_payload(self) -> dict:
+
         payload = {
             "aeroporto_partenza": self.aeroporto_partenza.upper(),
             "destinazione": self.destinazione,
             "compagnia": self.compagnia,
+
             "prezzo": round(float(self.prezzo), 2),
+
             "valuta": (self.valuta or "EUR").upper()[:3],
 
             "data_partenza": self.data_partenza,
@@ -72,12 +124,16 @@ class Offerta:
         }
 
 
-        # nuovi dati orari
+        if self.aeroporto_arrivo:
+            payload["aeroporto_arrivo"] = self.aeroporto_arrivo
+
+
         if self.ora_partenza:
             payload["ora_partenza"] = self.ora_partenza
 
         if self.ora_arrivo:
             payload["ora_arrivo"] = self.ora_arrivo
+
 
         if self.ora_partenza_ritorno:
             payload["ora_partenza_ritorno"] = self.ora_partenza_ritorno
@@ -85,11 +141,20 @@ class Offerta:
         if self.ora_arrivo_ritorno:
             payload["ora_arrivo_ritorno"] = self.ora_arrivo_ritorno
 
+
         if self.durata_andata:
             payload["durata_andata"] = self.durata_andata
 
+
         if self.durata_ritorno:
             payload["durata_ritorno"] = self.durata_ritorno
+
+
+        if self.ritorni:
+            payload["ritorni"] = [
+                r.to_payload()
+                for r in self.ritorni
+            ]
 
 
         if self.link_prenotazione:
@@ -108,11 +173,13 @@ class Offerta:
 
 
 class BaseScanner:
+
     nome = "base"
     compagnia = "Sconosciuta"
 
 
     def __init__(self, connector=None):
+
         self.connector = connector
         self.origini = settings.origini
         self.prezzo_massimo = settings.prezzo_massimo
@@ -125,7 +192,8 @@ class BaseScanner:
     def run(self) -> list:
 
         offerte = [
-            o for o in self.scan()
+            o
+            for o in self.scan()
             if o.valida()
             and o.prezzo <= self.prezzo_massimo
         ]
@@ -134,10 +202,12 @@ class BaseScanner:
         viste = set()
         uniche = []
 
+
         for o in offerte:
+
             chiave = (
                 o.aeroporto_partenza,
-                o.destinazione,
+                o.aeroporto_arrivo,
                 o.data_partenza,
                 o.prezzo
             )
@@ -149,7 +219,9 @@ class BaseScanner:
             uniche.append(o)
 
 
-        uniche.sort(key=lambda o: o.prezzo)
+        uniche.sort(
+            key=lambda o: o.prezzo
+        )
 
 
         if self.connector:
