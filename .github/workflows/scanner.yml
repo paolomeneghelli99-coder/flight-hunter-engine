@@ -61,6 +61,54 @@ jobs:
 
           echo "Token ottenuto correttamente"
 
+      # ============================================================
+      # TEST AUTENTICAZIONE API FLIGHT HUNTER
+      # ============================================================
+
+      - name: Test autenticazione API Flight Hunter
+        env:
+          FH_PUBLISHABLE_KEY: ${{ secrets.FH_PUBLISHABLE_KEY }}
+          FH_ACCESS_TOKEN: ${{ env.FH_ACCESS_TOKEN }}
+          FH_IMPORT_URL: https://flight-hunter.lovable.app/api/public/offers/import
+        run: |
+          set -euo pipefail
+
+          echo "=========================================="
+          echo "TEST AUTENTICAZIONE API FLIGHT HUNTER"
+          echo "=========================================="
+
+          HTTP_CODE=$(curl -sS \
+            -o /tmp/import_response.json \
+            -w "%{http_code}" \
+            -X POST \
+            "${FH_IMPORT_URL}" \
+            -H "apikey: ${FH_PUBLISHABLE_KEY}" \
+            -H "Authorization: Bearer ${FH_ACCESS_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+
+          echo "HTTP status: ${HTTP_CODE}"
+          echo "Risposta API:"
+
+          cat /tmp/import_response.json
+
+          echo ""
+
+          if [ "$HTTP_CODE" = "401" ]; then
+            echo "=========================================="
+            echo "ERRORE 401"
+            echo "=========================================="
+            echo "Il JWT appena generato da Supabase viene"
+            echo "rifiutato dall'API Flight Hunter."
+            echo ""
+            echo "Il problema è quindi probabilmente nella"
+            echo "configurazione di autenticazione/backend"
+            echo "della Flight Hunter 2.0."
+            exit 1
+          fi
+
+          echo "Il JWT non è stato rifiutato con HTTP 401."
+
       - name: Test ricerca ritorno Ryanair
         run: |
           python - <<'PY'
@@ -114,3 +162,4 @@ jobs:
           echo "Avvio scanner Flight Hunter..."
           python main.py
           echo "Scanner terminato"
+    
