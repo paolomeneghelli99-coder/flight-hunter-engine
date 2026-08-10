@@ -758,7 +758,7 @@ class VoloteaScanner(BaseScanner):
                                     compagnia=
                                         self.compagnia,
 
-                                    preco=prezzo,
+                                    prezzo=prezzo,
                                 )
                             )
 
