@@ -1,58 +1,3 @@
-      - name: Test Volotea with Playwright
-        shell: bash
-        run: |
-          set -e
-
-          echo "========================================"
-          echo "TEST VOL OTEA PLAYWRIGHT"
-          echo "========================================"
-
-          python - <<'PY'
-          from playwright.sync_api import sync_playwright
-
-          URL = "https://www.volotea.com/"
-
-          with sync_playwright() as p:
-              browser = p.chromium.launch(
-                  headless=True
-              )
-
-              page = browser.new_page(
-                  locale="it-IT"
-              )
-
-              print("Apertura Volotea...")
-              page.goto(
-                  URL,
-                  wait_until="domcontentloaded",
-                  timeout=60000
-              )
-
-              print("URL finale:")
-              print(page.url)
-
-              print("Titolo:")
-              print(page.title())
-
-              print("")
-              print("Attesa caricamento pagina...")
-
-              page.wait_for_timeout(5000)
-
-              print("")
-              print("URL dopo caricamento:")
-              print(page.url)
-
-              print("")
-              print("Titolo dopo caricamento:")
-              print(page.title())
-
-              print("")
-              print("Test completato.")
-
-              browser.close()
-          PY
-
 name: Flight Hunter Scanner
 
 on:
@@ -310,16 +255,12 @@ jobs:
           if remaining <= 0:
               print("")
               print("ERRORE: JWT GIÀ SCADUTO")
-              print("Il token ottenuto da Supabase non è utilizzabile.")
               raise SystemExit(1)
 
           if remaining < 60:
               print("")
               print(
                   "ERRORE: JWT scade tra meno di 60 secondi."
-              )
-              print(
-                  "Non è sufficientemente sicuro per eseguire lo scanner."
               )
               raise SystemExit(1)
 
@@ -342,6 +283,62 @@ jobs:
 
           echo "OK: FH_ACCESS_TOKEN disponibile"
           echo "Il valore del token non verrà mostrato."
+
+      - name: Test Volotea with Playwright
+        shell: bash
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "TEST VOLOTEA PLAYWRIGHT"
+          echo "========================================"
+
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+
+          URL = "https://www.volotea.com/"
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch(
+                  headless=True
+              )
+
+              page = browser.new_page(
+                  locale="it-IT"
+              )
+
+              print("Apertura Volotea...")
+
+              page.goto(
+                  URL,
+                  wait_until="domcontentloaded",
+                  timeout=60000
+              )
+
+              print("URL finale:")
+              print(page.url)
+
+              print("Titolo:")
+              print(page.title())
+
+              print("")
+              print("Attesa caricamento pagina...")
+
+              page.wait_for_timeout(5000)
+
+              print("")
+              print("URL dopo caricamento:")
+              print(page.url)
+
+              print("")
+              print("Titolo dopo caricamento:")
+              print(page.title())
+
+              print("")
+              print("Test Volotea completato.")
+
+              browser.close()
+          PY
 
       - name: Run Flight Hunter Scanner
         shell: bash
