@@ -310,7 +310,7 @@ def aggiungi_ritorni(
     """
 
     # limitiamo per non bombardare Ryanair
-    analizzate = offerte[:100]
+    analizzate = offerte[:500]
 
 
     for offerta in analizzate:
