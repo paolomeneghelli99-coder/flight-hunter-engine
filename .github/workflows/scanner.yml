@@ -133,8 +133,18 @@ jobs:
           token = data.get("access_token")
 
           if not token:
-              error = data.get("error_description") or data.get("msg") or data.get("error") or "Autenticazione fallita"
-              print(f"ERRORE AUTENTICAZIONE: {error}", file=sys.stderr)
+              error = (
+                  data.get("error_description")
+                  or data.get("msg")
+                  or data.get("error")
+                  or "Autenticazione fallita"
+              )
+
+              print(
+                  f"ERRORE AUTENTICAZIONE: {error}",
+                  file=sys.stderr
+              )
+
               sys.exit(1)
 
           print(token)
@@ -153,12 +163,93 @@ jobs:
 
           echo "Autenticazione completata."
 
-      - name: Verify access token
+      - name: Inspect JWT claims
+        shell: bash
         run: |
           set -e
 
           echo "========================================"
           echo "VERIFICA JWT"
+          echo "========================================"
+
+          python - <<'PY'
+          import os
+          import base64
+          import json
+          import datetime
+
+          token = os.environ.get("FH_ACCESS_TOKEN", "")
+
+          if not token:
+              print("ERRORE: FH_ACCESS_TOKEN non presente")
+              raise SystemExit(1)
+
+          parts = token.split(".")
+
+          if len(parts) != 3:
+              print("ERRORE: JWT non valido come struttura")
+              raise SystemExit(1)
+
+          payload = parts[1]
+          payload += "=" * (-len(payload) % 4)
+
+          try:
+              data = json.loads(
+                  base64.urlsafe_b64decode(payload)
+              )
+          except Exception as exc:
+              print(
+                  f"ERRORE: impossibile leggere il payload JWT: {exc}"
+              )
+              raise SystemExit(1)
+
+          print("JWT ricevuto: SI")
+
+          print(
+              "issuer (iss):",
+              data.get("iss", "MANCANTE")
+          )
+
+          print(
+              "audience (aud):",
+              data.get("aud", "MANCANTE")
+          )
+
+          print(
+              "subject (sub):",
+              "PRESENTE" if data.get("sub") else "MANCANTE"
+          )
+
+          print(
+              "role:",
+              data.get("role", "MANCANTE")
+          )
+
+          print(
+              "email:",
+              data.get("email", "MANCANTE")
+          )
+
+          exp = data.get("exp")
+
+          if exp:
+              print(
+                  "scadenza:",
+                  datetime.datetime.fromtimestamp(
+                      exp,
+                      datetime.timezone.utc
+                  ).isoformat()
+              )
+          else:
+              print("scadenza: MANCANTE")
+          PY
+
+      - name: Verify access token
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "VERIFICA ACCESS TOKEN"
           echo "========================================"
 
           if [ -z "$FH_ACCESS_TOKEN" ]; then
@@ -197,8 +288,11 @@ jobs:
             echo "========================================"
             echo "ERRORE FLIGHT HUNTER"
             echo "========================================"
+
             cat flight_hunter.log
+
             echo "========================================"
+
             exit "$EXIT_CODE"
           fi
 
@@ -223,3 +317,4 @@ jobs:
           echo "========================================"
           echo "FLIGHT HUNTER FALLITO"
           echo "========================================"
+          echo "Controlla i passaggi precedenti per individuare l'errore."
