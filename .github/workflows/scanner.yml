@@ -63,21 +63,21 @@ jobs:
 
 
       # ============================================================
-      # TEST VOLOTEA
+      # TEST VOLOTEA - FRONTEND + INTERCETTAZIONE NETWORK
       # ============================================================
 
-      - name: Test Volotea
+      - name: Test Volotea frontend
         shell: bash
         env:
           VOLOTEA_API_KEY: ${{ secrets.VOLOTEA_API_KEY }}
         run: |
-          set -o pipefail
+          set -e
 
           echo "========================================"
           echo "TEST VOLOTEA"
           echo "========================================"
 
-          python - <<'PY'
+          python -c '
           import json
           import os
           from datetime import date, timedelta
@@ -85,33 +85,22 @@ jobs:
           import requests
           from playwright.sync_api import sync_playwright
 
-
-          STATIONS_URL = (
-              "https://json.volotea.com/"
-              "dist/stations/stations.json"
-          )
-
-          SEARCH_URL = (
-              "https://api.volotea.com/"
-              "api/spa/voe/v1/flights/search"
-          )
-
+          STATIONS_URL = "https://json.volotea.com/dist/stations/stations.json"
           BOOKING_URL = "https://book.volotea.com/"
+
+          SEARCH_PATH = "/api/spa/voe/v1/flights/search"
 
           USER_AGENT = (
               "Mozilla/5.0 "
-              "(Linux; Android 6.0; Nexus 5 "
-              "Build/MRA58N) "
+              "(Linux; Android 6.0; Nexus 5 Build/MRA58N) "
               "AppleWebKit/537.36 "
               "(KHTML, like Gecko) "
               "Chrome/147.0.0.0 "
               "Mobile Safari/537.36"
           )
 
-
           def log(message=""):
               print(message, flush=True)
-
 
           # ========================================================
           # 1. DOWNLOAD STATIONS
@@ -122,7 +111,7 @@ jobs:
           log("----------------------------------------")
 
           try:
-              stations_response = requests.get(
+              response = requests.get(
                   STATIONS_URL,
                   timeout=60,
                   headers={
@@ -132,103 +121,60 @@ jobs:
                   },
               )
 
-              log(
-                  f"HTTP status: "
-                  f"{stations_response.status_code}"
-              )
+              log(f"HTTP status: {response.status_code}")
 
-              stations_response.raise_for_status()
+              response.raise_for_status()
 
-              stations = stations_response.json()
+              stations = response.json()
 
           except Exception as exc:
               log("")
-              log(
-                  "ERRORE DOWNLOAD STATIONS:"
-              )
+              log("ERRORE DOWNLOAD STATIONS:")
               log(repr(exc))
               raise SystemExit(1)
 
-
           if not isinstance(stations, dict):
-              log(
-                  "ERRORE: stations.json "
-                  "non contiene un dizionario."
+              raise SystemExit(
+                  "ERRORE: stations.json non contiene un dizionario."
               )
-              raise SystemExit(1)
 
-
-          log(
-              f"Stazioni presenti: {len(stations)}"
-          )
-
+          log(f"Stazioni presenti: {len(stations)}")
 
           if "VRN" not in stations:
-              log(
-                  "ERRORE: VRN non trovato "
-                  "in stations.json."
+              raise SystemExit(
+                  "ERRORE: VRN non trovato in stations.json."
               )
-              raise SystemExit(1)
-
 
           vrn = stations["VRN"]
-
           markets = vrn.get("Markets") or {}
 
-          log(
-              f"Mercati VRN: {len(markets)}"
-          )
-
+          log(f"Mercati VRN: {len(markets)}")
 
           if "CTA" not in markets:
-              log(
-                  "ERRORE: CTA non presente "
-                  "nei Markets di VRN."
+              raise SystemExit(
+                  "ERRORE: CTA non presente nei Markets di VRN."
               )
-              raise SystemExit(1)
-
 
           market = markets["CTA"]
-
 
           log("")
           log("VRN -> CTA")
           log("----------------------------------------")
 
-          log(
-              f"Enabled: {market.get('Enabled')}"
-          )
-
-          log(
-              f"FlightType: {market.get('FlightType')}"
-          )
-
-          log(
-              f"MinFlightDate: "
-              f"{market.get('MinFlightDate')}"
-          )
-
-          log(
-              f"MaxFlightDate: "
-              f"{market.get('MaxFlightDate')}"
-          )
-
+          log(f"Enabled: {market.get(\"Enabled\")}")
+          log(f"FlightType: {market.get(\"FlightType\")}")
+          log(f"MinFlightDate: {market.get(\"MinFlightDate\")}")
+          log(f"MaxFlightDate: {market.get(\"MaxFlightDate\")}")
 
           if not market.get("Enabled"):
-              log(
-                  "ERRORE: VRN -> CTA "
-                  "non è Enabled."
+              raise SystemExit(
+                  "ERRORE: VRN -> CTA non è Enabled."
               )
-              raise SystemExit(1)
-
 
           min_date = market.get("MinFlightDate")
           max_date = market.get("MaxFlightDate")
 
-          today = date.today()
-
-          test_date = today + timedelta(days=1)
-
+          test_date = date.today() + timedelta(days=1)
 
           if min_date:
               test_date = max(
@@ -236,70 +182,48 @@ jobs:
                   date.fromisoformat(min_date),
               )
 
-
           if max_date:
-              max_date_obj = date.fromisoformat(
-                  max_date
-              )
+              max_date_obj = date.fromisoformat(max_date)
 
               if test_date > max_date_obj:
-                  log(
-                      "ERRORE: nessuna data valida "
-                      "disponibile per il test."
+                  raise SystemExit(
+                      "ERRORE: nessuna data valida disponibile per il test."
                   )
-                  raise SystemExit(1)
-
 
           data_str = test_date.isoformat()
 
-
           log("")
-          log(
-              f"Data utilizzata per il test: "
-              f"{data_str}"
-          )
-
+          log(f"Data utilizzata per il test: {data_str}")
 
           # ========================================================
-          # 2. APERTURA FRONTEND VOLOTEA
+          # 2. APERTURA FRONTEND
           # ========================================================
 
           log("")
           log("2. APERTURA FRONTEND VOLOTEA")
           log("----------------------------------------")
 
-
-          api_key = (
-              os.environ.get(
-                  "VOLOTEA_API_KEY",
-                  "",
-              )
-              .strip()
-          )
-
+          api_key = os.environ.get(
+              "VOLOTEA_API_KEY",
+              "",
+          ).strip()
 
           if api_key:
-              log(
-                  "VOLOTEA_API_KEY: configurata"
-              )
+              log("VOLOTEA_API_KEY: configurata")
           else:
-              log(
-                  "ATTENZIONE: VOLOTEA_API_KEY "
-                  "non configurata."
-              )
+              log("VOLOTEA_API_KEY: non configurata")
 
+          captured_requests = []
+          captured_responses = []
 
           browser = None
 
-
           try:
-
               with sync_playwright() as p:
 
                   browser = p.chromium.launch(
-                      headless=True
+                      headless=True,
                   )
-
 
                   context = browser.new_context(
                       locale="it-IT",
@@ -310,15 +234,138 @@ jobs:
                       },
                   )
 
-
                   page = context.new_page()
 
+                  # ==================================================
+                  # INTERCETTAZIONE REQUEST
+                  # ==================================================
 
-                  log("")
-                  log(
-                      f"Apertura: {BOOKING_URL}"
+                  def handle_request(request):
+                      url = request.url
+
+                      if (
+                          "api.volotea.com" in url
+                          or "flights/search" in url
+                      ):
+                          headers = request.all_headers()
+
+                          safe_headers = {}
+
+                          for key, value in headers.items():
+                              lower = key.lower()
+
+                              if lower in (
+                                  "authorization",
+                                  "x-api-key",
+                                  "x-session-token",
+                                  "cookie",
+                              ):
+                                  safe_headers[key] = "[PRESENTE]"
+                              else:
+                                  safe_headers[key] = value
+
+                          item = {
+                              "method": request.method,
+                              "url": url,
+                              "headers": safe_headers,
+                          }
+
+                          try:
+                              post_data = request.post_data
+
+                              if post_data:
+                                  try:
+                                      item["post_data"] = json.loads(
+                                          post_data
+                                      )
+                                  except Exception:
+                                      item["post_data"] = (
+                                          post_data[:5000]
+                                      )
+
+                          except Exception:
+                              pass
+
+                          captured_requests.append(item)
+
+                          log("")
+                          log(">>> REQUEST API VOLOTEA")
+                          log(f"METHOD: {request.method}")
+                          log(f"URL: {url}")
+
+                          log("HEADERS RILEVANTI:")
+
+                          for key in sorted(safe_headers):
+                              log(f"  {key}: {safe_headers[key]}")
+
+                  # ==================================================
+                  # INTERCETTAZIONE RESPONSE
+                  # ==================================================
+
+                  def handle_response(response):
+                      url = response.url
+
+                      if (
+                          "api.volotea.com" in url
+                          or "flights/search" in url
+                      ):
+                          item = {
+                              "status": response.status,
+                              "url": url,
+                          }
+
+                          try:
+                              content_type = response.headers.get(
+                                  "content-type",
+                                  "",
+                              )
+
+                              item["content_type"] = content_type
+
+                              if "json" in content_type.lower():
+                                  body = response.body()
+
+                                  item["size"] = len(body)
+
+                                  try:
+                                      data = json.loads(body)
+
+                                      item["json"] = data
+
+                                  except Exception:
+                                      pass
+
+                              else:
+                                  item["size"] = len(
+                                      response.body()
+                                  )
+
+                          except Exception as exc:
+                              item["error"] = repr(exc)
+
+                          captured_responses.append(item)
+
+                          log("")
+                          log("<<< RESPONSE API VOLOTEA")
+                          log(f"STATUS: {response.status}")
+                          log(f"URL: {url}")
+
+                  page.on(
+                      "request",
+                      handle_request,
                   )
 
+                  page.on(
+                      "response",
+                      handle_response,
+                  )
+
+                  # ==================================================
+                  # APERTURA
+                  # ==================================================
+
+                  log("")
+                  log(f"Apertura: {BOOKING_URL}")
 
                   try:
                       page.goto(
@@ -327,48 +374,34 @@ jobs:
                           timeout=90000,
                       )
 
-                      page.wait_for_timeout(5000)
+                      page.wait_for_timeout(8000)
 
                   except Exception as exc:
                       log("")
                       log(
                           "ATTENZIONE: apertura frontend "
-                          "Volotea non completata:"
+                          "non completata:"
                       )
                       log(repr(exc))
 
-
                   log("")
-                  log(
-                      f"URL finale: {page.url}"
-                  )
-
+                  log(f"URL finale: {page.url}")
 
                   cookies = context.cookies()
 
-
                   log(
-                      f"Cookie browser: "
-                      f"{len(cookies)}"
+                      f"Cookie browser: {len(cookies)}"
                   )
 
-
-                  # =================================================
-                  # 3. ANALISI LOCAL STORAGE
-                  # =================================================
+                  # ==================================================
+                  # LOCAL STORAGE
+                  # ==================================================
 
                   log("")
-                  log(
-                      "3. ANALISI SESSIONE BROWSER"
-                  )
+                  log("3. ANALISI SESSIONE BROWSER")
                   log("----------------------------------------")
 
-
-                  local_storage = {}
-
-
                   try:
-
                       local_storage = page.evaluate(
                           """
                           () => {
@@ -392,27 +425,21 @@ jobs:
                       )
 
                   except Exception as exc:
-
+                      local_storage = {}
                       log(
                           "LocalStorage non leggibile:"
                       )
-
                       log(repr(exc))
-
 
                   log(
                       f"Elementi localStorage: "
                       f"{len(local_storage)}"
                   )
 
-
                   interesting_keys = []
 
-
                   for key in local_storage:
-
                       key_lower = key.lower()
-
 
                       if (
                           "session" in key_lower
@@ -420,287 +447,138 @@ jobs:
                           or "api" in key_lower
                           or "client" in key_lower
                       ):
-
-                          interesting_keys.append(
-                              key
-                          )
-
+                          interesting_keys.append(key)
 
                   if interesting_keys:
-
                       log(
-                          "Chiavi sessione/token "
-                          "individuate:"
+                          "Chiavi interessanti:"
                       )
 
                       for key in sorted(
                           interesting_keys
                       ):
-
-                          log(
-                              f" - {key}"
-                          )
+                          log(f" - {key}")
 
                   else:
-
                       log(
                           "Nessuna chiave evidente "
                           "di sessione/token."
                       )
 
-
-                  # =================================================
-                  # 4. COOKIE
-                  # =================================================
+                  # ==================================================
+                  # COOKIE
+                  # ==================================================
 
                   log("")
                   log("Cookie rilevanti")
                   log("----------------------------------------")
 
-
-                  relevant_cookie_names = []
-
-
-                  for cookie in cookies:
-
-                      name = cookie.get(
-                          "name",
-                          "",
-                      )
-
-                      if name:
-                          relevant_cookie_names.append(
-                              name
-                          )
-
-
-                  for name in sorted(
-                      set(relevant_cookie_names)
-                  ):
-
-                      log(
-                          f" - {name}"
-                      )
-
-
-                  # =================================================
-                  # 5. PAYLOAD
-                  # =================================================
-
-                  log("")
-                  log(
-                      "4. PAYLOAD SEARCH API"
-                  )
-                  log("----------------------------------------")
-
-
-                  payload = {
-
-                      "abTastyExperiments": [],
-
-                      "codes": {
-                          "currency": "EUR",
-                          "promotionCode": "",
-                          "bookingType": 2,
-                          "residentType": "NONE",
-                      },
-
-                      "criteria": [
-                          {
-                              "beginDate": data_str,
-                              "endDate": data_str,
-                              "selectedDate": data_str,
-                              "origin": "VRN",
-                              "destination": "CTA",
-                          }
-                      ],
-
-                      "fareTypesToRequest": [
-                          "R",
-                          "S",
-                          "SP",
-                      ],
-
-                      "passengers": [
-                          {
-                              "type": "ADT",
-                              "count": 1,
-                          }
-                      ],
-                  }
-
-
-                  log(
-                      json.dumps(
-                          payload,
-                          indent=2,
-                          ensure_ascii=False,
-                      )
-                  )
-
-
-                  # =================================================
-                  # 6. RECUPERO SESSION TOKEN
-                  # =================================================
-
-                  session_token = None
-
-
-                  for key, value in local_storage.items():
-
-                      if not isinstance(
-                          value,
-                          str,
-                      ):
-                          continue
-
-
-                      key_lower = key.lower()
-
-
-                      if (
-                          "session" in key_lower
-                          and "token" in key_lower
-                      ):
-
-                          session_token = value
-                          break
-
-
-                  log("")
-
-                  log(
-                      "x-session-token: "
-                      + (
-                          "PRESENTE"
-                          if session_token
-                          else "ASSENTE"
-                      )
-                  )
-
-
-                  # =================================================
-                  # 7. HEADER
-                  # =================================================
-
-                  request_headers = {
-
-                      "Accept":
-                          "application/json",
-
-                      "Content-Type":
-                          "application/json",
-
-                      "Origin":
-                          "https://book.volotea.com",
-
-                      "Referer":
-                          "https://book.volotea.com/",
-
-                      "User-Agent":
-                          USER_AGENT,
-
-                      "x-client-type":
-                          "spa",
-                  }
-
-
-                  if api_key:
-
-                      request_headers[
-                          "x-api-key"
-                      ] = api_key
-
-
-                  if session_token:
-
-                      request_headers[
-                          "x-session-token"
-                      ] = session_token
-
-
-                  # =================================================
-                  # 8. SEARCH API
-                  # =================================================
-
-                  log("")
-                  log(
-                      "5. POST FLIGHTS/SEARCH"
-                  )
-                  log("----------------------------------------")
-
-
-                  result = page.evaluate(
-                      """
-                      async ({url, payload, headers}) => {
-
-                          try {
-
-                              const response =
-                                  await fetch(
-                                      url,
-                                      {
-                                          method: "POST",
-                                          headers: headers,
-                                          credentials: "include",
-                                          body:
-                                              JSON.stringify(payload)
-                                      }
-                                  );
-
-                              const text =
-                                  await response.text();
-
-                              return {
-                                  status:
-                                      response.status,
-
-                                  ok:
-                                      response.ok,
-
-                                  text:
-                                      text.slice(
-                                          0,
-                                          10000
-                                      )
-                              };
-
-                          } catch (error) {
-
-                              return {
-                                  status: 0,
-                                  ok: false,
-                                  error:
-                                      String(error)
-                              };
-                          }
-                      }
-                      """,
+                  cookie_names = sorted(
                       {
-                          "url": SEARCH_URL,
-                          "payload": payload,
-                          "headers": request_headers,
-                      },
+                          cookie.get("name", "")
+                          for cookie in cookies
+                          if cookie.get("name")
+                      }
                   )
 
+                  for name in cookie_names:
+                      log(f" - {name}")
 
-                  status = result.get(
-                      "status",
-                      0,
-                  )
-
+                  # ==================================================
+                  # 4. TENTATIVO DI INTERAZIONE FRONTEND
+                  # ==================================================
 
                   log("")
+                  log("4. ANALISI FORM DI RICERCA")
+                  log("----------------------------------------")
+
+                  try:
+                      inputs = page.locator(
+                          "input"
+                      ).all()
+
+                      log(
+                          f"Input HTML individuati: "
+                          f"{len(inputs)}"
+                      )
+
+                      for index, element in enumerate(
+                          inputs[:30]
+                      ):
+                          try:
+                              attrs = element.evaluate(
+                                  """
+                                  el => ({
+                                      tag: el.tagName,
+                                      type: el.type,
+                                      name: el.name,
+                                      id: el.id,
+                                      placeholder:
+                                          el.placeholder,
+                                      aria:
+                                          el.getAttribute(
+                                              "aria-label"
+                                          )
+                                  })
+                                  """
+                              )
+
+                              log(
+                                  f"INPUT {index}: "
+                                  f"{json.dumps(attrs, ensure_ascii=False)}"
+                              )
+
+                          except Exception:
+                              pass
+
+                  except Exception as exc:
+                      log(
+                          "Impossibile analizzare "
+                          "gli input:"
+                      )
+                      log(repr(exc))
+
+                  # ==================================================
+                  # 5. RICHIESTE API GENERATE DURANTE APERTURA
+                  # ==================================================
+
+                  log("")
+                  log("5. RISULTATO INTERCETTAZIONE")
+                  log("----------------------------------------")
+
                   log(
-                      f"HTTP status: {status}"
+                      f"Richieste API Volotea intercettate: "
+                      f"{len(captured_requests)}"
                   )
 
+                  log(
+                      f"Risposte API Volotea intercettate: "
+                      f"{len(captured_responses)}"
+                  )
 
-                  # =================================================
-                  # 9. RISPOSTA
-                  # =================================================
+                  search_requests = [
+                      item
+                      for item in captured_requests
+                      if SEARCH_PATH in item["url"]
+                  ]
 
-                  if status == 200:
+                  search_responses = [
+                      item
+                      for item in captured_responses
+                      if SEARCH_PATH in item["url"]
+                  ]
+
+                  log(
+                      f"Richieste flights/search: "
+                      f"{len(search_requests)}"
+                  )
+
+                  log(
+                      f"Risposte flights/search: "
+                      f"{len(search_responses)}"
+                  )
+
+                  if search_requests:
 
                       log("")
                       log(
@@ -708,128 +586,179 @@ jobs:
                       )
 
                       log(
-                          "VOLOTEA SEARCH API -> HTTP 200"
+                          "FLIGHT SEARCH INTERCETTATA"
                       )
 
                       log(
                           "========================================"
                       )
 
-
-                      text = result.get(
-                          "text",
-                          "",
-                      )
-
-
-                      try:
-                          response_data = json.loads(
-                              text
-                          )
-                      except Exception:
-                          response_data = None
-
-
-                      if isinstance(
-                          response_data,
-                          (dict, list),
+                      for index, item in enumerate(
+                          search_requests
                       ):
-
                           log("")
                           log(
-                              "Risposta JSON ricevuta: SI"
+                              f"SEARCH REQUEST #{index + 1}"
                           )
 
                           log(
-                              f"Dimensione risposta: "
-                              f"{len(text)} caratteri"
-                          )
-
-                          log("")
-                          log(
-                              "TEST VOLOTEA SEARCH RIUSCITO."
-                          )
-
-                      else:
-
-                          log("")
-                          log(
-                              "HTTP 200 ma risposta "
-                              "non JSON."
+                              f"URL: {item[\"url\"]}"
                           )
 
                           log(
-                              text[:5000]
+                              f"METHOD: {item[\"method\"]}"
                           )
 
+                          log("PAYLOAD:")
 
-                  elif status == 403:
-
-                      log("")
-                      log(
-                          "========================================"
-                      )
-
-                      log(
-                          "VOLOTEA SEARCH API -> HTTP 403"
-                      )
-
-                      log(
-                          "========================================"
-                      )
-
-                      log("")
-                      log(
-                          "Il server Volotea ha rifiutato "
-                          "la richiesta."
-                      )
-
-                      log("")
-                      log(
-                          "Risposta server:"
-                      )
-
-                      log(
-                          result.get(
-                              "text",
-                              "",
-                          )
-                      )
-
-                      log("")
-                      log(
-                          "Questo NON viene considerato "
-                          "errore del workflow."
-                      )
-
-                      log(
-                          "stations.json funziona "
-                          "correttamente."
-                      )
-
+                          if "post_data" in item:
+                              log(
+                                  json.dumps(
+                                      item["post_data"],
+                                      indent=2,
+                                      ensure_ascii=False,
+                                  )
+                              )
+                          else:
+                              log(
+                                  "Payload non disponibile."
+                              )
 
                   else:
 
                       log("")
                       log(
-                          f"Status HTTP inatteso: "
-                          f"{status}"
+                          "NESSUNA flights/search "
+                          "intercettata durante "
+                          "l'apertura del frontend."
                       )
 
-                      if result.get("error"):
+                      log("")
+                      log(
+                          "Questo è previsto se il frontend "
+                          "richiede l'interazione manuale "
+                          "con il modulo di ricerca."
+                      )
+
+                  # ==================================================
+                  # 6. RISPOSTE SEARCH
+                  # ==================================================
+
+                  if search_responses:
+
+                      log("")
+                      log(
+                          "RISPOSTE FLIGHTS/SEARCH"
+                      )
+                      log("----------------------------------------")
+
+                      for index, item in enumerate(
+                          search_responses
+                      ):
                           log(
-                              f"Errore: "
-                              f"{result.get('error')}"
+                              f"Response #{index + 1}: "
+                              f"HTTP {item[\"status\"]}, "
+                              f"{item.get(\"size\", 0)} bytes"
                           )
 
-                      if result.get("text"):
-                          log(
-                              result.get(
-                                  "text",
-                                  "",
+                          if (
+                              item["status"] == 200
+                              and "json" in item
+                          ):
+                              log("")
+                              log(
+                                  "RISPOSTA JSON SEARCH "
+                                  "RICEVUTA."
                               )
+
+                              data = item["json"]
+
+                              if isinstance(
+                                  data,
+                                  (dict, list),
+                              ):
+                                  log(
+                                      "JSON valido: SI"
+                                  )
+
+                                  log(
+                                      f"Tipo risposta: "
+                                      f"{type(data).__name__}"
+                                  )
+
+                  # ==================================================
+                  # 7. REPORT HEADER DISPONIBILITÀ
+                  # ==================================================
+
+                  log("")
+                  log(
+                      "6. ANALISI HEADER SESSIONE"
+                  )
+                  log("----------------------------------------")
+
+                  if captured_requests:
+
+                      all_headers = {}
+
+                      for item in captured_requests:
+                          for key in item.get(
+                              "headers",
+                              {},
+                          ):
+                              all_headers[
+                                  key.lower()
+                              ] = key
+
+                      interesting = [
+                          key
+                          for key in sorted(
+                              all_headers
+                          )
+                          if (
+                              "session" in key
+                              or "token" in key
+                              or "api" in key
+                              or "authorization" in key
+                          )
+                      ]
+
+                      if interesting:
+
+                          log(
+                              "Header rilevanti "
+                              "intercettati:"
                           )
 
+                          for key in interesting:
+                              log(
+                                  f" - {all_headers[key]}"
+                              )
+
+                      else:
+
+                          log(
+                              "Nessun header evidente "
+                              "di autenticazione."
+                          )
+
+                  else:
+
+                      log(
+                          "Nessuna richiesta API "
+                          "utile intercettata."
+                      )
+
+                  # ==================================================
+                  # CHIUSURA
+                  # ==================================================
+
+                  log("")
+                  log(
+                      "Attesa finale per eventuali "
+                      "richieste asincrone..."
+                  )
+
+                  page.wait_for_timeout(3000)
 
           except Exception as exc:
 
@@ -843,7 +772,7 @@ jobs:
 
               log("")
               log(
-                  "Il test Volotea non blocca "
+                  "Il test Volotea NON blocca "
                   "Flight Hunter."
               )
 
@@ -856,20 +785,11 @@ jobs:
                   except Exception:
                       pass
 
-
           log("")
-          log(
-              "========================================"
-          )
-
-          log(
-              "TEST VOLOTEA COMPLETATO"
-          )
-
-          log(
-              "========================================"
-          )
-          PY
+          log("========================================")
+          log("TEST VOLOTEA COMPLETATO")
+          log("========================================")
+          '
 
 
       # ============================================================
@@ -937,24 +857,19 @@ jobs:
           echo "HTTP status autenticazione: $HTTP_CODE"
 
           if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-
             echo ""
             echo "ERRORE AUTENTICAZIONE"
-
             echo ""
             echo "Risposta server:"
-
             cat "$RESPONSE_FILE"
-
             echo ""
 
             rm -f "$RESPONSE_FILE"
-
             exit 1
           fi
 
           ACCESS_TOKEN=$(
-            python - "$RESPONSE_FILE" <<'PY'
+            python -c '
           import json
           import sys
 
@@ -963,22 +878,19 @@ jobs:
           with open(
               filename,
               "r",
-              encoding="utf-8",
+              encoding="utf-8"
           ) as f:
               data = json.load(f)
 
-          token = data.get(
-              "access_token"
-          )
+          token = data.get("access_token")
 
           if not token:
               raise SystemExit(
-                  "access_token non presente "
-                  "nella risposta di autenticazione"
+                  "access_token non presente nella risposta di autenticazione"
               )
 
           print(token)
-          PY
+          ' "$RESPONSE_FILE"
           )
 
           rm -f "$RESPONSE_FILE"
