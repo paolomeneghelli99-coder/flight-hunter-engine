@@ -7,6 +7,7 @@ import requests
 
 from config.settings import settings
 
+
 MAX_PER_RICHIESTA = 500
 
 
@@ -31,6 +32,29 @@ def _invia(blocco: list) -> int:
         timeout=settings.timeout,
     )
 
+    print("")
+    print("========================================")
+    print("RISPOSTA BACKEND IMPORT")
+    print("========================================")
+    print("HTTP status:", risposta.status_code)
+    print("URL:", settings.import_url)
+
+    try:
+        print("Risposta backend:")
+        print(
+            json.dumps(
+                risposta.json(),
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+    except Exception:
+        print("Risposta backend non JSON:")
+        print(risposta.text)
+
+    print("========================================")
+    print("")
+
     if risposta.status_code == 401:
         raise SystemExit(
             "Token non valido o scaduto (401): "
@@ -51,9 +75,28 @@ def _invia(blocco: list) -> int:
         )
         return 0
 
-    dati = risposta.json()
+    try:
+        dati = risposta.json()
+    except Exception as exc:
+        print(
+            "ERRORE: il backend ha restituito una risposta "
+            "non JSON.",
+            file=sys.stderr,
+        )
+        print(
+            f"Dettaglio: {exc}",
+            file=sys.stderr,
+        )
+        return 0
 
-    return int(dati.get("importate", 0))
+    importate = dati.get("importate", 0)
+
+    print(
+        "Offerte importate dichiarate dal backend:",
+        importate,
+    )
+
+    return int(importate)
 
 
 def import_offers(offerte: list) -> int:
@@ -67,7 +110,10 @@ def import_offers(offerte: list) -> int:
 
     totale = 0
 
-    for blocco in _blocchi(offerte, dimensione):
+    for blocco in _blocchi(
+        offerte,
+        dimensione,
+    ):
         importate = _invia(blocco)
 
         print(
