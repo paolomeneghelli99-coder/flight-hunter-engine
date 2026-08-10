@@ -2,7 +2,6 @@ name: Flight Hunter Scanner
 
 on:
   workflow_dispatch:
-
   schedule:
     - cron: "*/30 * * * *"
 
@@ -100,6 +99,17 @@ jobs:
           BOOKING_URL = "https://book.volotea.com/"
 
 
+          USER_AGENT = (
+              "Mozilla/5.0 "
+              "(Linux; Android 6.0; Nexus 5 "
+              "Build/MRA58N) "
+              "AppleWebKit/537.36 "
+              "(KHTML, like Gecko) "
+              "Chrome/147.0.0.0 "
+              "Mobile Safari/537.36"
+          )
+
+
           # ========================================================
           # 1. DOWNLOAD STATIONS
           # ========================================================
@@ -112,13 +122,7 @@ jobs:
               STATIONS_URL,
               timeout=60,
               headers={
-                  "User-Agent": (
-                      "Mozilla/5.0 "
-                      "(Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) "
-                      "Chrome/147.0 Safari/537.36"
-                  ),
+                  "User-Agent": USER_AGENT,
                   "Accept": "application/json",
                   "Accept-Language": (
                       "it-IT,it;q=0.9,en;q=0.8"
@@ -239,12 +243,18 @@ jobs:
               or ""
           ).strip()
 
-          if not api_key:
-              print("")
+          if api_key:
+              print(
+                  "VOLOTEA_API_KEY:",
+                  "CONFIGURATA"
+              )
+          else:
               print(
                   "ATTENZIONE: VOLOTEA_API_KEY "
                   "non configurata."
               )
+
+          captured_requests = []
 
           with sync_playwright() as p:
 
@@ -254,15 +264,7 @@ jobs:
 
               context = browser.new_context(
                   locale="it-IT",
-                  user_agent=(
-                      "Mozilla/5.0 "
-                      "(Linux; Android 6.0; Nexus 5 "
-                      "Build/MRA58N) "
-                      "AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) "
-                      "Chrome/147.0.0.0 "
-                      "Mobile Safari/537.36"
-                  ),
+                  user_agent=USER_AGENT,
                   extra_http_headers={
                       "Accept-Language":
                           "it-IT,it;q=0.9,en;q=0.8",
@@ -271,6 +273,31 @@ jobs:
 
               page = context.new_page()
 
+
+              def intercetta_request(request):
+                  if request.method != "POST":
+                      return
+
+                  if SEARCH_URL not in request.url:
+                      return
+
+                  headers = request.headers
+
+                  captured_requests.append(
+                      {
+                          "url": request.url,
+                          "headers": headers,
+                          "post_data": request.post_data,
+                      }
+                  )
+
+
+              page.on(
+                  "request",
+                  intercetta_request
+              )
+
+
               print("")
               print(
                   "Apertura:",
@@ -278,6 +305,7 @@ jobs:
               )
 
               try:
+
                   page.goto(
                       BOOKING_URL,
                       wait_until="domcontentloaded",
@@ -287,6 +315,7 @@ jobs:
                   page.wait_for_timeout(5000)
 
               except Exception as exc:
+
                   print("")
                   print(
                       "ATTENZIONE: apertura frontend "
@@ -296,6 +325,7 @@ jobs:
                   print(
                       repr(exc)
                   )
+
 
               print("")
               print(
@@ -312,7 +342,7 @@ jobs:
 
 
               # ====================================================
-              # 3. ANALISI SESSIONE
+              # 3. LOCAL STORAGE
               # ====================================================
 
               print("")
@@ -322,6 +352,7 @@ jobs:
               local_storage = {}
 
               try:
+
                   local_storage = page.evaluate(
                       """
                       () => {
@@ -351,10 +382,12 @@ jobs:
                       repr(exc)
                   )
 
+
               print(
                   "Elementi localStorage:",
                   len(local_storage)
               )
+
 
               interesting_keys = []
 
@@ -368,7 +401,9 @@ jobs:
                       or "api" in key_lower
                       or "client" in key_lower
                   ):
+
                       interesting_keys.append(key)
+
 
               if interesting_keys:
 
@@ -377,6 +412,7 @@ jobs:
                   )
 
                   for key in interesting_keys:
+
                       print(
                           " -",
                           key
@@ -395,7 +431,7 @@ jobs:
               # ====================================================
 
               print("")
-              print("Cookie rilevanti")
+              print("4. COOKIE RILEVANTI")
               print("----------------------------------------")
 
               for cookie in sorted(
@@ -415,7 +451,7 @@ jobs:
               # ====================================================
 
               print("")
-              print("4. PAYLOAD SEARCH API")
+              print("5. PAYLOAD SEARCH API")
               print("----------------------------------------")
 
               payload = {
@@ -462,10 +498,17 @@ jobs:
 
 
               # ====================================================
-              # 6. SESSION TOKEN
+              # 6. TOKEN / SESSIONE
               # ====================================================
 
               session_token = None
+              client_session = None
+              captured_api_key = None
+
+
+              # ----------------------------------------------------
+              # Cerca eventuale x-session-token nel localStorage
+              # ----------------------------------------------------
 
               for key, value in local_storage.items():
 
@@ -478,8 +521,46 @@ jobs:
                       "session" in key_lower
                       and "token" in key_lower
                   ):
+
                       session_token = value
                       break
+
+
+              # ----------------------------------------------------
+              # Cerca una richiesta reale del frontend
+              # ----------------------------------------------------
+
+              for captured in captured_requests:
+
+                  headers = captured.get(
+                      "headers",
+                      {}
+                  )
+
+                  if not session_token:
+
+                      session_token = (
+                          headers.get(
+                              "x-session-token"
+                          )
+                      )
+
+                  if not client_session:
+
+                      client_session = (
+                          headers.get(
+                              "x-client-session"
+                          )
+                      )
+
+                  if not captured_api_key:
+
+                      captured_api_key = (
+                          headers.get(
+                              "x-api-key"
+                          )
+                      )
+
 
               print("")
 
@@ -488,6 +569,28 @@ jobs:
                   "PRESENTE"
                   if session_token
                   else "ASSENTE"
+              )
+
+              print(
+                  "x-client-session:",
+                  "PRESENTE"
+                  if client_session
+                  else "ASSENTE"
+              )
+
+              print(
+                  "x-api-key:",
+                  "PRESENTE"
+                  if (
+                      captured_api_key
+                      or api_key
+                  )
+                  else "ASSENTE"
+              )
+
+              print(
+                  "Richieste SEARCH intercettate:",
+                  len(captured_requests)
               )
 
 
@@ -510,25 +613,24 @@ jobs:
                       "https://book.volotea.com/",
 
                   "User-Agent":
-                      (
-                          "Mozilla/5.0 "
-                          "(Linux; Android 6.0; Nexus 5 "
-                          "Build/MRA58N) "
-                          "AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) "
-                          "Chrome/147.0.0.0 "
-                          "Mobile Safari/537.36"
-                      ),
+                      USER_AGENT,
 
                   "x-client-type":
                       "spa",
               }
 
-              if api_key:
+
+              effective_api_key = (
+                  captured_api_key
+                  or api_key
+              )
+
+              if effective_api_key:
 
                   request_headers[
                       "x-api-key"
-                  ] = api_key
+                  ] = effective_api_key
+
 
               if session_token:
 
@@ -537,12 +639,19 @@ jobs:
                   ] = session_token
 
 
+              if client_session:
+
+                  request_headers[
+                      "x-client-session"
+                  ] = client_session
+
+
               # ====================================================
               # 8. SEARCH API
               # ====================================================
 
               print("")
-              print("5. POST FLIGHTS/SEARCH")
+              print("6. POST FLIGHTS/SEARCH")
               print("----------------------------------------")
 
               result = page.evaluate(
@@ -598,10 +707,12 @@ jobs:
                   }
               )
 
+
               status = result.get(
                   "status",
                   0
               )
+
 
               print("")
               print(
@@ -634,11 +745,15 @@ jobs:
                       ""
                   )
 
+
                   try:
+
                       data = json.loads(text)
 
                   except Exception:
+
                       data = None
+
 
                   if isinstance(
                       data,
@@ -656,6 +771,11 @@ jobs:
                           "caratteri"
                       )
 
+                      print("")
+                      print(
+                          "TEST VOLOTEA RIUSCITO."
+                      )
+
                   else:
 
                       print("")
@@ -664,10 +784,9 @@ jobs:
                           "ma non JSON."
                       )
 
-                  print("")
-                  print(
-                      "TEST VOLOTEA RIUSCITO."
-                  )
+                      print(
+                          text[:5000]
+                      )
 
 
               elif status == 403:
@@ -720,12 +839,21 @@ jobs:
 
                   print("")
 
-                  print(
-                      result.get(
-                          "text",
-                          ""
+                  if result.get("error"):
+
+                      print(
+                          "Errore:",
+                          result.get("error")
                       )
-                  )
+
+                  else:
+
+                      print(
+                          result.get(
+                              "text",
+                              ""
+                          )
+                      )
 
 
               browser.close()
@@ -735,6 +863,7 @@ jobs:
           print("========================================")
           print("TEST VOLOTEA COMPLETATO")
           print("========================================")
+          PY
 
 
       # ============================================================
@@ -794,22 +923,7 @@ jobs:
               --header "apikey: ${FH_PUBLISHABLE_KEY}" \
               --header "Authorization: Bearer ${FH_PUBLISHABLE_KEY}" \
               --header "Content-Type: application/json" \
-              --data "$(python - <<'PY'
-          import json
-          import os
-
-          print(
-              json.dumps(
-                  {
-                      "email":
-                          os.environ["FH_EMAIL"],
-                      "password":
-                          os.environ["FH_PASSWORD"],
-                  }
-              )
-          )
-          PY
-          )" \
+              --data "$(python -c 'import json,os; print(json.dumps({"email": os.environ["FH_EMAIL"], "password": os.environ["FH_PASSWORD"]}))')" \
               "$AUTH_URL"
           )
 
@@ -845,7 +959,6 @@ jobs:
               "r",
               encoding="utf-8"
           ) as f:
-
               data = json.load(f)
 
           token = data.get(
@@ -875,9 +988,7 @@ jobs:
 
           echo "::add-mask::$ACCESS_TOKEN"
 
-          echo \
-            "FH_ACCESS_TOKEN=$ACCESS_TOKEN" \
-            >> "$GITHUB_ENV"
+          echo "FH_ACCESS_TOKEN=$ACCESS_TOKEN" >> "$GITHUB_ENV"
 
 
       # ============================================================
