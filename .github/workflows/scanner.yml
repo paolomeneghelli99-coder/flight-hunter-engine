@@ -2,6 +2,7 @@ name: Flight Hunter Scanner
 
 on:
   workflow_dispatch:
+
   schedule:
     - cron: "0 */6 * * *"
 
@@ -21,16 +22,29 @@ jobs:
 
     steps:
 
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
       - name: Checkout repository
         uses: actions/checkout@v5
+
+
+      # ============================================================
+      # PYTHON
+      # ============================================================
 
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
+
+      # ============================================================
+      # DIPENDENZE
+      # ============================================================
+
       - name: Install dependencies
-        shell: bash
         run: |
           set -e
 
@@ -46,13 +60,18 @@ jobs:
 
           echo ""
           echo "Installazione Chromium per Playwright..."
+
           python -m playwright install --with-deps chromium
 
           echo ""
           echo "Dipendenze installate correttamente."
 
+
+      # ============================================================
+      # CONTROLLO REPOSITORY
+      # ============================================================
+
       - name: Check repository
-        shell: bash
         run: |
           set -e
 
@@ -78,8 +97,23 @@ jobs:
 
           find scanners -maxdepth 2 -type f | sort
 
+          echo ""
+          echo "Controllo scanners principali..."
+
+          test -f scanners/base.py
+          test -f scanners/ryanair.py
+          test -f scanners/volotea.py
+          test -f scanners/__init__.py
+
+          echo "OK: scanner Ryanair presente"
+          echo "OK: scanner Volotea presente"
+
+
+      # ============================================================
+      # CONTROLLO SECRET
+      # ============================================================
+
       - name: Check required secrets
-        shell: bash
         run: |
           set -e
 
@@ -108,6 +142,11 @@ jobs:
           fi
 
           echo "OK: tutti i secret sono presenti"
+
+
+      # ============================================================
+      # AUTENTICAZIONE SUPABASE
+      # ============================================================
 
       - name: Authenticate with Supabase
         shell: bash
@@ -169,6 +208,11 @@ jobs:
           echo "FH_ACCESS_TOKEN=$ACCESS_TOKEN" >> "$GITHUB_ENV"
 
           echo "Autenticazione completata."
+
+
+      # ============================================================
+      # VALIDAZIONE JWT
+      # ============================================================
 
       - name: Validate JWT lifetime
         shell: bash
@@ -257,7 +301,6 @@ jobs:
           if remaining <= 0:
               print("")
               print("ERRORE: JWT GIÀ SCADUTO")
-              print("Il token ottenuto da Supabase non è utilizzabile.")
               raise SystemExit(1)
 
           if remaining < 60:
@@ -265,17 +308,461 @@ jobs:
               print(
                   "ERRORE: JWT scade tra meno di 60 secondi."
               )
-              print(
-                  "Non è sufficientemente sicuro per eseguire lo scanner."
-              )
               raise SystemExit(1)
 
           print("")
           print("OK: JWT valido e non scaduto.")
           PY
 
-      - name: Verify access token
+
+      # ============================================================
+      # TEST VOLOTEA STATIONS + SEARCH API
+      # ============================================================
+
+      - name: Test Volotea API
         shell: bash
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "TEST VOLOTEA API"
+          echo "========================================"
+
+          python - <<'PY'
+          import json
+          import requests
+          from datetime import date, timedelta
+
+          STATIONS_URL = (
+              "https://json.volotea.com/"
+              "dist/stations/stations.json"
+          )
+
+          SEARCH_URL = (
+              "https://api.volotea.com/"
+              "api/spa/voe/v1/flights/search"
+          )
+
+          HEADERS = {
+              "User-Agent": (
+                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) "
+                  "Chrome/124.0 Safari/537.36"
+              ),
+              "Accept": "application/json, text/plain, */*",
+              "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
+              "Content-Type": "application/json",
+              "Origin": "https://www.volotea.com",
+              "Referer": "https://www.volotea.com/",
+          }
+
+          session = requests.Session()
+          session.headers.update(HEADERS)
+
+          print("")
+          print("1. DOWNLOAD STATIONS")
+          print("----------------------------------------")
+
+          response = session.get(
+              STATIONS_URL,
+              timeout=60,
+          )
+
+          print(
+              "HTTP status:",
+              response.status_code
+          )
+
+          response.raise_for_status()
+
+          stations = response.json()
+
+          if not isinstance(stations, dict):
+              raise RuntimeError(
+                  "stations.json non contiene un dizionario"
+              )
+
+          print(
+              "Stazioni presenti:",
+              len(stations)
+          )
+
+          if "VRN" not in stations:
+              raise RuntimeError(
+                  "VRN non trovato in stations.json"
+              )
+
+          vrn = stations["VRN"]
+
+          markets = vrn.get("Markets") or {}
+
+          print(
+              "Mercati VRN:",
+              len(markets)
+          )
+
+          if "CTA" not in markets:
+              raise RuntimeError(
+                  "CTA non presente nei Markets di VRN"
+              )
+
+          market = markets["CTA"]
+
+          print("")
+          print("VRN -> CTA")
+          print("----------------------------------------")
+          print(
+              "Enabled:",
+              market.get("Enabled")
+          )
+          print(
+              "FlightType:",
+              market.get("FlightType")
+          )
+          print(
+              "MinFlightDate:",
+              market.get("MinFlightDate")
+          )
+          print(
+              "MaxFlightDate:",
+              market.get("MaxFlightDate")
+          )
+
+          if not market.get("Enabled"):
+              raise RuntimeError(
+                  "La rotta VRN -> CTA non è Enabled"
+              )
+
+          min_date = market.get("MinFlightDate")
+          max_date = market.get("MaxFlightDate")
+
+          oggi = date.today()
+
+          data_test = oggi + timedelta(days=1)
+
+          if min_date:
+              data_test = max(
+                  data_test,
+                  date.fromisoformat(min_date)
+              )
+
+          if max_date:
+              if data_test > date.fromisoformat(max_date):
+                  raise RuntimeError(
+                      "Nessuna data valida disponibile "
+                      "per il test VRN -> CTA"
+                  )
+
+          data_str = data_test.isoformat()
+
+          print("")
+          print(
+              "Data utilizzata per il test:",
+              data_str
+          )
+
+          print("")
+          print("2. POST FLIGHTS/SEARCH")
+          print("----------------------------------------")
+
+          payload = {
+              "codes": {
+                  "currency": "EUR",
+                  "promotionCode": "",
+                  "bookingType": 2,
+                  "residentType": "NONE",
+              },
+
+              "criteria": [
+                  {
+                      "beginDate": data_str,
+                      "endDate": data_str,
+                      "selectedDate": data_str,
+                      "origin": "VRN",
+                      "destination": "CTA",
+                  }
+              ],
+
+              "fareTypesToRequest": [
+                  "R",
+                  "S",
+                  "SP",
+              ],
+
+              "passengers": [
+                  {
+                      "type": "ADT",
+                      "count": 1,
+                  }
+              ],
+          }
+
+          print("Endpoint:")
+          print(SEARCH_URL)
+
+          print("")
+          print("Payload:")
+          print(
+              json.dumps(
+                  payload,
+                  indent=2,
+                  ensure_ascii=False
+              )
+          )
+
+          response = session.post(
+              SEARCH_URL,
+              json=payload,
+              timeout=60,
+          )
+
+          print("")
+          print(
+              "HTTP status:",
+              response.status_code
+          )
+
+          if response.status_code != 200:
+              print("")
+              print("RISPOSTA API:")
+              print(response.text[:5000])
+
+          response.raise_for_status()
+
+          data = response.json()
+
+          print("")
+          print("Risposta JSON ricevuta: SI")
+          print(
+              "Dimensione risposta:",
+              len(response.content),
+              "bytes"
+          )
+
+          # --------------------------------------------------------
+          # Ricerca ricorsiva dei voli
+          # --------------------------------------------------------
+
+          voli = []
+
+          def visita(obj):
+
+              if isinstance(obj, dict):
+
+                  if (
+                      "fares" in obj
+                      and "designator" in obj
+                  ):
+                      voli.append(obj)
+
+                  for value in obj.values():
+                      visita(value)
+
+              elif isinstance(obj, list):
+
+                  for value in obj:
+                      visita(value)
+
+          visita(data)
+
+          print("")
+          print(
+              "Oggetti volo trovati:",
+              len(voli)
+          )
+
+          if not voli:
+              print("")
+              print(
+                  "ATTENZIONE: API raggiungibile, "
+                  "ma nessun volo trovato per "
+                  f"VRN -> CTA del {data_str}."
+              )
+
+              print("")
+              print(
+                  "Questo NON significa che l'API "
+                  "non funzioni."
+              )
+
+              raise SystemExit(0)
+
+          # --------------------------------------------------------
+          # Estrazione del primo volo
+          # --------------------------------------------------------
+
+          volo = voli[0]
+
+          designator = (
+              volo.get("designator")
+              or {}
+          )
+
+          print("")
+          print("3. PRIMO VOLO TROVATO")
+          print("----------------------------------------")
+
+          print(
+              "Origine:",
+              designator.get("origin")
+          )
+
+          print(
+              "Destinazione:",
+              designator.get("destination")
+          )
+
+          print(
+              "Partenza:",
+              designator.get("departure")
+          )
+
+          print(
+              "Arrivo:",
+              designator.get("arrival")
+          )
+
+          print(
+              "Durata:",
+              volo.get("flightDuration")
+          )
+
+          segments = (
+              volo.get("segments")
+              or []
+          )
+
+          if segments:
+
+              identifier = (
+                  segments[0].get("identifier")
+                  or {}
+              )
+
+              print(
+                  "Numero volo:",
+                  identifier.get("identifier")
+              )
+
+              print(
+                  "Compagnia:",
+                  identifier.get("carrierCode")
+              )
+
+          # --------------------------------------------------------
+          # Estrazione prezzo
+          # --------------------------------------------------------
+
+          prezzi = []
+
+          for fare in volo.get(
+              "fares",
+              []
+          ):
+
+              for passenger in fare.get(
+                  "passengerFares",
+                  []
+              ):
+
+                  if passenger.get(
+                      "passengerType"
+                  ) != "ADT":
+                      continue
+
+                  fare_amount = (
+                      passenger.get(
+                          "fareAmount"
+                      )
+                      or {}
+                  )
+
+                  prezzo = (
+                      fare_amount.get(
+                          "eurAmount"
+                      )
+                      or fare_amount.get(
+                          "amount"
+                      )
+                  )
+
+                  if prezzo is not None:
+
+                      try:
+                          prezzo = float(prezzo)
+
+                          if prezzo > 0:
+                              prezzi.append(
+                                  prezzo
+                              )
+
+                      except (
+                          TypeError,
+                          ValueError
+                      ):
+                          pass
+
+          print("")
+
+          if prezzi:
+
+              print(
+                  "Prezzo minimo trovato:",
+                  f"{min(prezzi):.2f} EUR"
+              )
+
+          else:
+
+              print(
+                  "ATTENZIONE: nessun prezzo "
+                  "ADT trovato."
+              )
+
+          print("")
+          print("========================================")
+          print("TEST VOLOTEA COMPLETATO")
+          print("========================================")
+
+          print("")
+          print(
+              "OK: stations.json funziona."
+          )
+
+          print(
+              "OK: rotta VRN -> CTA individuata."
+          )
+
+          print(
+              "OK: Search API raggiungibile."
+          )
+
+          print(
+              "OK: risposta JSON interpretata."
+          )
+
+          print(
+              "OK: struttura volo interpretata."
+          )
+
+          if prezzi:
+              print(
+                  "OK: prezzo interpretato."
+              )
+
+          print("")
+          print(
+              "Volotea è pronta per essere "
+              "integrata nello scanner."
+          )
+          PY
+
+
+      # ============================================================
+      # VERIFICA ACCESS TOKEN
+      # ============================================================
+
+      - name: Verify access token
         run: |
           set -e
 
@@ -291,148 +778,10 @@ jobs:
           echo "OK: FH_ACCESS_TOKEN disponibile"
           echo "Il valore del token non verrà mostrato."
 
-      - name: Test Volotea stations
-        shell: bash
-        run: |
-          set -e
 
-          echo "========================================"
-          echo "TEST VOLOTEA STATIONS"
-          echo "========================================"
-
-          python - <<'PY'
-          import json
-          import requests
-
-          URL = "https://json.volotea.com/dist/stations/stations.json"
-
-          print("")
-          print("Download:")
-          print(URL)
-          print("")
-
-          response = requests.get(
-              URL,
-              timeout=60,
-              headers={
-                  "User-Agent": "Mozilla/5.0",
-                  "Accept": "application/json",
-              },
-          )
-
-          print("HTTP status:", response.status_code)
-          print(
-              "Content-Type:",
-              response.headers.get("content-type")
-          )
-          print(
-              "Dimensione:",
-              len(response.content),
-              "bytes"
-          )
-
-          response.raise_for_status()
-
-          data = response.json()
-
-          print("")
-          print(
-              "Tipo JSON:",
-              type(data).__name__
-          )
-
-          if isinstance(data, dict):
-
-              print(
-                  "Numero elementi principali:",
-                  len(data)
-              )
-
-              print("")
-              print("Prime 10 chiavi:")
-
-              for key in list(data.keys())[:10]:
-                  print(" -", key)
-
-              print("")
-              print("Ricerca VRN...")
-
-              vrn = data.get("VRN")
-
-              if vrn is None:
-
-                  print(
-                      "VRN non trovato come chiave principale."
-                  )
-
-                  for key, value in data.items():
-
-                      if isinstance(value, dict):
-
-                          if (
-                              value.get("iata") == "VRN"
-                              or value.get("code") == "VRN"
-                          ):
-
-                              vrn = value
-
-                              print(
-                                  "VRN trovato sotto la chiave:",
-                                  key
-                              )
-
-                              break
-
-              if vrn is not None:
-
-                  print("")
-                  print("STRUTTURA VRN:")
-
-                  print(
-                      json.dumps(
-                          vrn,
-                          indent=2,
-                          ensure_ascii=False
-                      )[:10000]
-                  )
-
-              else:
-
-                  print(
-                      "ATTENZIONE: VRN non trovato."
-                  )
-
-          elif isinstance(data, list):
-
-              print(
-                  "Numero elementi:",
-                  len(data)
-              )
-
-              if data:
-
-                  print("")
-                  print("Primo elemento:")
-
-                  print(
-                      json.dumps(
-                          data[0],
-                          indent=2,
-                          ensure_ascii=False
-                      )[:5000]
-                  )
-
-          else:
-
-              print(
-                  "Struttura JSON inattesa."
-              )
-
-          print("")
-          print("========================================")
-          print("TEST COMPLETATO")
-          print("========================================")
-          PY
+      # ============================================================
+      # AVVIO FLIGHT HUNTER
+      # ============================================================
 
       - name: Run Flight Hunter Scanner
         shell: bash
@@ -469,8 +818,12 @@ jobs:
             echo "========================================"
 
             exit "$EXIT_CODE"
-
           fi
+
+
+      # ============================================================
+      # LOG
+      # ============================================================
 
       - name: Upload scanner log
         if: always()
@@ -480,6 +833,11 @@ jobs:
           path: flight_hunter.log
           if-no-files-found: ignore
 
+
+      # ============================================================
+      # SUCCESSO
+      # ============================================================
+
       - name: Scanner completed
         if: success()
         run: |
@@ -487,10 +845,16 @@ jobs:
           echo "FLIGHT HUNTER COMPLETATO CON SUCCESSO"
           echo "========================================"
 
+
+      # ============================================================
+      # ERRORE
+      # ============================================================
+
       - name: Scanner failed
         if: failure()
         run: |
           echo "========================================"
           echo "FLIGHT HUNTER FALLITO"
           echo "========================================"
+
           echo "Controlla i passaggi precedenti per individuare l'errore."
