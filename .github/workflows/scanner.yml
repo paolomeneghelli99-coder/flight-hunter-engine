@@ -44,6 +44,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+          echo ""
+          echo "Installazione Chromium per Playwright..."
+          python -m playwright install --with-deps chromium
+
+          echo ""
+          echo "Dipendenze installate correttamente."
+
       - name: Check repository
         run: |
           set -e
