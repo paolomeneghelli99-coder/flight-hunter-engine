@@ -1,13 +1,14 @@
 name: Flight Hunter Scanner
 
-on:
-workflow_dispatch:
+'on':
+  workflow_dispatch:
 
-schedule:
-- cron: "*/30 * * * *"
+  schedule:
+    - cron: "*/30 * * * *"
 
 jobs:
 scanner:
+name: Flight Hunter Scanner
 runs-on: ubuntu-latest
 
 ```
@@ -65,16 +66,6 @@ steps:
 
   # ============================================================
   # TEST VOLOTEA
-  #
-  # Il test verifica:
-  # 1. stations.json
-  # 2. rotta VRN -> CTA
-  # 3. apertura del frontend Volotea
-  # 4. presenza della sessione browser
-  # 5. chiamata Search API dal contesto browser
-  #
-  # Il test NON deve far fallire il workflow se Volotea
-  # risponde 403: in quel caso viene diagnosticato il problema.
   # ============================================================
 
   - name: Test Volotea API
@@ -91,7 +82,6 @@ steps:
       python - <<'PY'
       import json
       import os
-      import sys
       from datetime import date, timedelta
 
       import requests
@@ -131,7 +121,9 @@ steps:
                   "Chrome/147.0 Safari/537.36"
               ),
               "Accept": "application/json",
-              "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
+              "Accept-Language": (
+                  "it-IT,it;q=0.9,en;q=0.8"
+              ),
           },
       )
 
@@ -251,12 +243,8 @@ steps:
       if not api_key:
           print("")
           print(
-              "ATTENZIONE: VOLOTEA_API_KEY non configurata."
-          )
-
-          print(
-              "Il test browser verrà comunque eseguito "
-              "per verificare il frontend."
+              "ATTENZIONE: VOLOTEA_API_KEY "
+              "non configurata."
           )
 
       with sync_playwright() as p:
@@ -291,7 +279,6 @@ steps:
           )
 
           try:
-
               page.goto(
                   BOOKING_URL,
                   wait_until="domcontentloaded",
@@ -301,7 +288,6 @@ steps:
               page.wait_for_timeout(5000)
 
           except Exception as exc:
-
               print("")
               print(
                   "ATTENZIONE: apertura frontend "
@@ -311,7 +297,6 @@ steps:
               print(
                   repr(exc)
               )
-
 
           print("")
           print(
@@ -328,7 +313,7 @@ steps:
 
 
           # ====================================================
-          # 3. LOCAL STORAGE
+          # 3. ANALISI SESSIONE
           # ====================================================
 
           print("")
@@ -338,17 +323,26 @@ steps:
           local_storage = {}
 
           try:
-
               local_storage = page.evaluate(
-                  "() => {"
-                  "const r = {};"
-                  "for (let i = 0; "
-                  "i < localStorage.length; i++) {"
-                  "const k = localStorage.key(i);"
-                  "r[k] = localStorage.getItem(k);"
-                  "}"
-                  "return r;"
-                  "}"
+                  """
+                  () => {
+                      const result = {};
+
+                      for (
+                          let i = 0;
+                          i < localStorage.length;
+                          i++
+                      ) {
+                          const key =
+                              localStorage.key(i);
+
+                          result[key] =
+                              localStorage.getItem(key);
+                      }
+
+                      return result;
+                  }
+                  """
               )
 
           except Exception as exc:
@@ -393,7 +387,7 @@ steps:
 
               print(
                   "Nessuna chiave evidente "
-                  "di sessione/token nel localStorage."
+                  "di sessione/token."
               )
 
 
@@ -402,33 +396,23 @@ steps:
           # ====================================================
 
           print("")
-          print("Cookie rilevanti:")
+          print("Cookie rilevanti")
           print("----------------------------------------")
 
-          cookie_names = []
-
-          for cookie in cookies:
-
-              name = cookie.get("name")
-
-              if not name:
-                  continue
-
-              cookie_names.append(name)
-
-          for name in sorted(cookie_names):
+          for cookie in sorted(
+              cookies,
+              key=lambda item:
+                  item.get("name", "")
+          ):
 
               print(
                   " -",
-                  name
+                  cookie.get("name")
               )
 
 
           # ====================================================
-          # 5. COSTRUZIONE PAYLOAD
-          #
-          # Usiamo lo stesso formato visto nella richiesta
-          # reale del browser.
+          # 5. PAYLOAD
           # ====================================================
 
           print("")
@@ -436,7 +420,6 @@ steps:
           print("----------------------------------------")
 
           payload = {
-
               "abTastyExperiments": [],
 
               "codes": {
@@ -480,19 +463,10 @@ steps:
 
 
           # ====================================================
-          # 6. RECUPERO x-session-token
-          #
-          # Non stampiamo MAI il token.
+          # 6. SESSION TOKEN
           # ====================================================
 
           session_token = None
-
-          token_candidates = [
-              "x-session-token",
-              "session-token",
-              "sessionToken",
-              "xSessionToken",
-          ]
 
           for key, value in local_storage.items():
 
@@ -508,29 +482,19 @@ steps:
                   session_token = value
                   break
 
-          if session_token:
-
-              print("")
-              print(
-                  "x-session-token trovato "
-                  "nel localStorage: SI"
-              )
-
-          else:
-
-              print("")
-              print(
-                  "x-session-token nel localStorage: NO"
-              )
-
-
-          # ====================================================
-          # 7. TEST SEARCH API
-          # ====================================================
-
           print("")
-          print("5. POST FLIGHTS/SEARCH")
-          print("----------------------------------------")
+
+          print(
+              "x-session-token:",
+              "PRESENTE"
+              if session_token
+              else "ASSENTE"
+          )
+
+
+          # ====================================================
+          # 7. HEADERS
+          # ====================================================
 
           request_headers = {
 
@@ -561,13 +525,11 @@ steps:
                   "spa",
           }
 
-
           if api_key:
 
               request_headers[
                   "x-api-key"
               ] = api_key
-
 
           if session_token:
 
@@ -576,31 +538,13 @@ steps:
               ] = session_token
 
 
-          print(
-              "x-api-key:",
-              "PRESENTE"
-              if api_key
-              else "ASSENTE"
-          )
-
-          print(
-              "x-session-token:",
-              "PRESENTE"
-              if session_token
-              else "ASSENTE"
-          )
-
-          print(
-              "x-client-type:",
-              request_headers[
-                  "x-client-type"
-              ]
-          )
-
-
           # ====================================================
-          # ESECUZIONE DAL CONTESTO BROWSER
+          # 8. SEARCH API
           # ====================================================
+
+          print("")
+          print("5. POST FLIGHTS/SEARCH")
+          print("----------------------------------------")
 
           result = page.evaluate(
               """
@@ -613,16 +557,10 @@ steps:
                               url,
                               {
                                   method: "POST",
-
                                   headers: headers,
-
-                                  credentials:
-                                      "include",
-
+                                  credentials: "include",
                                   body:
-                                      JSON.stringify(
-                                          payload
-                                      )
+                                      JSON.stringify(payload)
                               }
                           );
 
@@ -647,9 +585,7 @@ steps:
 
                       return {
                           status: 0,
-
                           ok: false,
-
                           error:
                               String(error)
                       };
@@ -662,7 +598,6 @@ steps:
                   "headers": request_headers,
               }
           )
-
 
           status = result.get(
               "status",
@@ -677,7 +612,7 @@ steps:
 
 
           # ====================================================
-          # RISPOSTA
+          # 9. RISPOSTA
           # ====================================================
 
           if status == 200:
@@ -686,9 +621,11 @@ steps:
               print(
                   "========================================"
               )
+
               print(
                   "VOLOTEA SEARCH API -> HTTP 200"
               )
+
               print(
                   "========================================"
               )
@@ -699,14 +636,15 @@ steps:
               )
 
               try:
-
                   data = json.loads(text)
 
               except Exception:
-
                   data = None
 
-              if isinstance(data, (dict, list)):
+              if isinstance(
+                  data,
+                  (dict, list)
+              ):
 
                   print("")
                   print(
@@ -727,7 +665,6 @@ steps:
                       "ma non JSON."
                   )
 
-
               print("")
               print(
                   "TEST VOLOTEA RIUSCITO."
@@ -740,16 +677,19 @@ steps:
               print(
                   "========================================"
               )
+
               print(
                   "VOLOTEA SEARCH API -> HTTP 403"
               )
+
               print(
                   "========================================"
               )
 
               print("")
               print(
-                  "Il server ha rifiutato la richiesta."
+                  "Il server ha rifiutato "
+                  "la richiesta."
               )
 
               print("")
@@ -770,29 +710,16 @@ steps:
                   "errore del workflow."
               )
 
-              print(
-                  "stations.json funziona."
-              )
-
-              print(
-                  "La richiesta reale del browser "
-                  "richiede ulteriori informazioni "
-                  "di sessione."
-              )
-
 
           else:
 
               print("")
               print(
-                  "Status HTTP:",
+                  "Status HTTP inatteso:",
                   status
               )
 
               print("")
-              print(
-                  "Risposta:"
-              )
 
               print(
                   result.get(
@@ -809,6 +736,7 @@ steps:
       print("========================================")
       print("TEST VOLOTEA COMPLETATO")
       print("========================================")
+
 
   # ============================================================
   # AUTENTICAZIONE FLIGHT HUNTER
@@ -876,7 +804,6 @@ steps:
               {
                   "email":
                       os.environ["FH_EMAIL"],
-
                   "password":
                       os.environ["FH_PASSWORD"],
               }
@@ -927,7 +854,6 @@ steps:
       )
 
       if not token:
-
           raise SystemExit(
               "access_token non presente "
               "nella risposta di autenticazione"
@@ -1025,3 +951,4 @@ steps:
       name: flight-hunter-log
       path: flight_hunter.log
       if-no-files-found: ignore
+```
