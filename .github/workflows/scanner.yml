@@ -56,7 +56,10 @@ jobs:
           API_PREFIX = "/api/spa/voe/"
 
           ORIGIN = "VRN"
+          ORIGIN_CITY = "Verona"
+
           DESTINATION = "CTA"
+          DESTINATION_CITY = "Catania"
 
           USER_AGENT = (
               "Mozilla/5.0 "
@@ -192,6 +195,26 @@ jobs:
                   return False
 
               try:
+                  locator.fill("")
+
+                  locator.fill(value)
+
+                  log(
+                      f"{description}: "
+                      f"valore '{value}' digitato."
+                  )
+
+                  return True
+
+              except Exception as first_error:
+                  log(
+                      f"{description}: "
+                      "fill non riuscito."
+                  )
+
+                  log(repr(first_error))
+
+              try:
                   page.keyboard.press("Control+A")
                   page.keyboard.press("Backspace")
 
@@ -202,18 +225,19 @@ jobs:
 
                   log(
                       f"{description}: "
-                      f"valore '{value}' digitato."
+                      f"valore '{value}' digitato "
+                      "tramite tastiera."
                   )
 
                   return True
 
-              except Exception as exc:
+              except Exception as second_error:
                   log(
                       f"{description}: "
                       "errore digitazione:"
                   )
 
-                  log(repr(exc))
+                  log(repr(second_error))
 
                   return False
 
@@ -243,6 +267,117 @@ jobs:
                   return ""
 
 
+          def find_current_origin(page):
+              selectors = [
+                  "#origin:visible",
+                  "#input-text_sf-origin:visible",
+                  "input[name='origin']:visible",
+                  "input[placeholder='Select airport']:visible",
+              ]
+
+              for selector in selectors:
+                  try:
+                      locator = page.locator(
+                          selector
+                      ).first
+
+                      if locator.count() > 0:
+                          if locator.is_visible():
+                              return locator
+
+                  except Exception:
+                      pass
+
+              return None
+
+
+          def find_current_destination(page):
+              selectors = [
+                  "#destination:visible",
+                  "#input-text_sf-destination:visible",
+                  "input[name='destination']:visible",
+                  "input[placeholder='Select airport']:visible",
+              ]
+
+              for selector in selectors:
+                  try:
+                      locator = page.locator(
+                          selector
+                      ).first
+
+                      if locator.count() > 0:
+                          if locator.is_visible():
+                              return locator
+
+                  except Exception:
+                      pass
+
+              return None
+
+
+          def inspect_visible_inputs(page, title):
+              log("")
+              log(title)
+              log("----------------------------------------")
+
+              try:
+                  inputs = page.locator(
+                      "input:visible"
+                  )
+
+                  count = inputs.count()
+
+                  log(
+                      f"Input visibili: {count}"
+                  )
+
+                  for index in range(
+                      min(count, 50)
+                  ):
+                      element = inputs.nth(index)
+
+                      try:
+                          attrs = element.evaluate(
+                              """
+                              el => ({
+                                  type: el.type,
+                                  name: el.name,
+                                  id: el.id,
+                                  placeholder:
+                                      el.placeholder,
+                                  value:
+                                      el.value,
+                                  aria:
+                                      el.getAttribute(
+                                          "aria-label"
+                                      ),
+                                  autocomplete:
+                                      el.getAttribute(
+                                          "autocomplete"
+                                      )
+                              })
+                              """
+                          )
+
+                          log(
+                              f"INPUT {index}: "
+                              + json.dumps(
+                                  attrs,
+                                  ensure_ascii=False,
+                              )
+                          )
+
+                      except Exception:
+                          pass
+
+              except Exception as exc:
+                  log(
+                      "Errore analisi input:"
+                  )
+
+                  log(repr(exc))
+
+
           def inspect_visible_text(
               page,
               terms,
@@ -265,7 +400,7 @@ jobs:
                           shown = 0
 
                           for index in range(
-                              min(count, 30)
+                              min(count, 50)
                           ):
                               element = locator.nth(
                                   index
@@ -283,7 +418,7 @@ jobs:
                                   if text:
                                       log(
                                           f"  [{shown}] "
-                                          f"{text[:300]}"
+                                          f"{text[:500]}"
                                       )
 
                                       shown += 1
@@ -295,72 +430,62 @@ jobs:
                       pass
 
 
-          def select_airport(
+          def inspect_autocomplete_dom(
               page,
-              code,
-              city,
               description,
           ):
               log("")
-              log(description)
-              log("----------------------------------------")
-
-              code_upper = code.upper()
-              city_upper = city.upper()
-
-              # --------------------------------------------------
-              # 1. DIAGNOSTICA DEL DOM DOPO LA DIGITAZIONE
-              # --------------------------------------------------
-
-              log("")
               log(
-                  f"DIAGNOSTICA AUTOCOMPLETE {code}"
+                  f"DIAGNOSTICA AUTOCOMPLETE "
+                  f"{description}"
               )
               log("----------------------------------------")
 
               selectors = [
-                  "[role='option']:visible",
-                  "[role='listbox']:visible",
-                  "li:visible",
-                  "button:visible",
-                  "div:visible",
-                  "span:visible",
+                  "[role='listbox']",
+                  "[role='option']",
+                  "li",
+                  "[class*='option' i]",
+                  "[class*='suggestion' i]",
+                  "[class*='autocomplete' i]",
+                  "[class*='dropdown' i]",
+                  "[class*='airport' i]",
               ]
 
-              diagnostic_matches = []
+              found = []
 
               for selector in selectors:
                   try:
-                      locator = page.locator(selector)
+                      locator = page.locator(
+                          selector
+                      )
+
                       count = locator.count()
 
-                      for index in range(min(count, 200)):
+                      for index in range(
+                          min(count, 100)
+                      ):
                           element = locator.nth(index)
 
                           try:
                               if not element.is_visible():
                                   continue
 
-                              text = element.inner_text().strip()
+                              text = (
+                                  element.inner_text()
+                                  .strip()
+                              )
 
                               if not text:
                                   continue
 
-                              upper = text.upper()
-
-                              if (
-                                  code_upper in upper
-                                  or city_upper in upper
-                                  or "VERONA" in upper
-                                  or "CATANIA" in upper
-                              ):
-                                  diagnostic_matches.append(
-                                      (
-                                          selector,
-                                          index,
-                                          element,
-                                      )
+                              found.append(
+                                  (
+                                      selector,
+                                      index,
+                                      text[:500],
                                   )
+                              )
 
                           except Exception:
                               pass
@@ -370,98 +495,94 @@ jobs:
 
               log(
                   f"Elementi diagnostici trovati: "
-                  f"{len(diagnostic_matches)}"
+                  f"{len(found)}"
               )
 
-              seen_text = set()
+              seen = set()
 
-              for index, (
-                  selector,
-                  dom_index,
-                  element,
-              ) in enumerate(
-                  diagnostic_matches[:30]
-              ):
-                  try:
-                      text = element.inner_text().strip()
+              shown = 0
 
-                      if text in seen_text:
-                          continue
+              for selector, index, text in found:
+                  key = text
 
-                      seen_text.add(text)
+                  if key in seen:
+                      continue
 
-                      info = element.evaluate(
-                          """
-                          el => ({
-                              tag: el.tagName,
-                              id: el.id,
-                              className: el.className,
-                              role: el.getAttribute("role"),
-                              ariaSelected:
-                                  el.getAttribute(
-                                      "aria-selected"
-                                  ),
-                              dataValue:
-                                  el.getAttribute(
-                                      "data-value"
-                                  ),
-                              text: el.innerText
-                          })
-                          """
-                      )
+                  seen.add(key)
 
-                      log(
-                          f"DIAG {index}: "
-                          + json.dumps(
-                              info,
-                              ensure_ascii=False,
-                          )
-                      )
+                  log(
+                      f"[{shown}] "
+                      f"{selector} -> {text}"
+                  )
 
-                  except Exception:
-                      pass
+                  shown += 1
 
-              # --------------------------------------------------
-              # 2. CERCA OPZIONI VERE
-              # --------------------------------------------------
+                  if shown >= 50:
+                      break
 
-              option_selectors = [
-                  "[role='option']:visible",
-                  "[role='listbox'] [role='option']:visible",
-                  "li:visible",
-                  "[data-testid*='airport' i]:visible",
-                  "[data-testid*='location' i]:visible",
-                  "[class*='airport' i]:visible",
-                  "[class*='suggest' i]:visible",
-                  "[class*='option' i]:visible",
+
+          def try_click_airport_text(
+              page,
+              code,
+              city,
+              description,
+          ):
+              log("")
+              log(description)
+              log("----------------------------------------")
+
+              terms = [
+                  f"{city}",
+                  f"{city} ({code})",
+                  f"{city} - {code}",
+                  f"{code} - {city}",
+                  code,
               ]
 
-              candidates = []
-
-              for selector in option_selectors:
+              for term in terms:
                   try:
-                      locator = page.locator(selector)
+                      locator = page.get_by_text(
+                          term,
+                          exact=False,
+                      )
+
                       count = locator.count()
 
-                      for index in range(min(count, 100)):
-                          element = locator.nth(index)
+                      log(
+                          f"Candidati testuali "
+                          f"'{term}': {count}"
+                      )
+
+                      for index in range(
+                          min(count, 20)
+                      ):
+                          candidate = locator.nth(
+                              index
+                          )
 
                           try:
-                              if not element.is_visible():
+                              if not candidate.is_visible():
                                   continue
 
-                              text = element.inner_text().strip()
+                              text = (
+                                  candidate.inner_text()
+                                  .strip()
+                              )
 
-                              if not text:
-                                  continue
+                              log(
+                                  f"Candidato: "
+                                  f"{text[:500]}"
+                              )
 
-                              upper = text.upper()
-
-                              if (
-                                  code_upper in upper
-                                  or city_upper in upper
+                              if safe_click(
+                                  candidate,
+                                  f"Selezione {code}",
                               ):
-                                  candidates.append(element)
+                                  page.wait_for_timeout(
+                                      1500
+                                  )
+
+                                  return True
 
                           except Exception:
                               pass
@@ -469,71 +590,79 @@ jobs:
                   except Exception:
                       pass
 
+              return False
+
+
+          def keyboard_select_airport(
+              page,
+              code,
+              city,
+              description,
+          ):
               log("")
               log(
-                  f"Candidati trovati per {code}: "
-                  f"{len(candidates)}"
+                  f"{description} - "
+                  "SELEZIONE DA TASTIERA"
               )
-
-              # --------------------------------------------------
-              # 3. CLICK SU CANDIDATO
-              # --------------------------------------------------
-
-              for index, candidate in enumerate(
-                  candidates[:20]
-              ):
-                  try:
-                      text = candidate.inner_text().strip()
-
-                      log(
-                          f"Candidato {index}: "
-                          f"{text[:500]}"
-                      )
-
-                      if safe_click(
-                          candidate,
-                          f"Selezione {code}",
-                      ):
-                          page.wait_for_timeout(1500)
-
-                          log(
-                              f"Click candidato {code} "
-                              "eseguito."
-                          )
-
-                          return True
-
-                  except Exception as exc:
-                      log(
-                          f"Candidato {index}: "
-                          f"errore {repr(exc)}"
-                      )
-
-              # --------------------------------------------------
-              # 4. FALLBACK TASTIERA
-              # --------------------------------------------------
-
-              log("")
-              log(
-                  "Nessun candidato cliccabile."
-              )
-
-              log(
-                  "Provo selezione da tastiera."
-              )
+              log("----------------------------------------")
 
               try:
-                  page.keyboard.press("ArrowDown")
+                  # Prima proviamo con il nome della città,
+                  # perché il frontend mostra nomi umani
+                  # e non necessariamente il codice IATA.
+                  page.keyboard.press(
+                      "Control+A"
+                  )
 
-                  page.wait_for_timeout(500)
+                  page.keyboard.press(
+                      "Backspace"
+                  )
 
-                  page.keyboard.press("Enter")
+                  page.keyboard.type(
+                      city,
+                      delay=100,
+                  )
 
-                  page.wait_for_timeout(1500)
+                  page.wait_for_timeout(
+                      2500
+                  )
+
+                  inspect_autocomplete_dom(
+                      page,
+                      f"{code} DOPO DIGITAZIONE "
+                      f"{city}",
+                  )
+
+                  inspect_visible_text(
+                      page,
+                      [
+                          code,
+                          city,
+                          "Italy",
+                          "Italia",
+                      ],
+                  )
+
+                  # Tentativo standard.
+                  page.keyboard.press(
+                      "ArrowDown"
+                  )
+
+                  page.wait_for_timeout(
+                      300
+                  )
+
+                  page.keyboard.press(
+                      "Enter"
+                  )
+
+                  page.wait_for_timeout(
+                      1800
+                  )
 
                   log(
-                      f"{code}: combinazione "
-                      "ArrowDown + Enter eseguita."
+                      f"{code}: "
+                      "ArrowDown + Enter eseguiti."
                   )
 
                   return True
@@ -545,6 +674,274 @@ jobs:
                   )
 
                   log(repr(exc))
+
+                  return False
+
+
+          def select_airport(
+              page,
+              code,
+              city,
+              description,
+              field_finder,
+          ):
+              log("")
+              log(description)
+              log("----------------------------------------")
+
+              field = field_finder(page)
+
+              if field is None:
+                  log(
+                      f"ERRORE: campo "
+                      f"{code} non trovato."
+                  )
+
+                  return False
+
+              # Prima prova con il codice.
+              try:
+                  if not clear_and_type(
+                      page,
+                      field,
+                      code,
+                      f"Campo {code}",
+                  ):
+                      return False
+
+                  page.wait_for_timeout(
+                      2500
+                  )
+
+              except Exception as exc:
+                  log(
+                      f"Errore digitazione "
+                      f"{code}:"
+                  )
+
+                  log(repr(exc))
+
+              inspect_autocomplete_dom(
+                  page,
+                  f"{code} DOPO CODICE",
+              )
+
+              inspect_visible_text(
+                  page,
+                  [
+                      code,
+                      city,
+                      "Italy",
+                      "Italia",
+                  ],
+              )
+
+              # Tentativo di click diretto.
+              if try_click_airport_text(
+                  page,
+                  code,
+                  city,
+                  "TENTATIVO CLICK RISULTATO",
+              ):
+                  current = field_finder(page)
+
+                  if current is not None:
+                      value = get_field_value(
+                          current,
+                          f"Verifica {code}",
+                      )
+
+                      if value.strip():
+                          log(
+                              f"{code}: selezione "
+                              "confermata."
+                          )
+
+                          return True
+
+              # Se il codice non ha prodotto
+              # un candidato, proviamo con la città.
+              field = field_finder(page)
+
+              if field is None:
+                  log(
+                      f"{code}: campo non più "
+                      "disponibile; il DOM è stato "
+                      "ricostruito."
+                  )
+
+                  inspect_visible_inputs(
+                      page,
+                      "INPUT DOPO CAMBIO DOM",
+                  )
+
+                  field = field_finder(page)
+
+                  if field is None:
+                      return False
+
+              try:
+                  if not clear_and_type(
+                      page,
+                      field,
+                      city,
+                      f"Campo {city}",
+                  ):
+                      return False
+
+                  page.wait_for_timeout(
+                      2500
+                  )
+
+              except Exception as exc:
+                  log(
+                      f"Errore digitazione "
+                      f"{city}:"
+                  )
+
+                  log(repr(exc))
+
+              inspect_autocomplete_dom(
+                  page,
+                  f"{code} DOPO CITTA",
+              )
+
+              inspect_visible_text(
+                  page,
+                  [
+                      code,
+                      city,
+                      "Italy",
+                      "Italia",
+                  ],
+              )
+
+              # Secondo tentativo di click.
+              if try_click_airport_text(
+                  page,
+                  code,
+                  city,
+                  "SECONDO TENTATIVO CLICK",
+              ):
+                  current = field_finder(page)
+
+                  if current is not None:
+                      value = get_field_value(
+                          current,
+                          f"Verifica {code}",
+                      )
+
+                      if value.strip():
+                          log(
+                              f"{code}: selezione "
+                              "confermata."
+                          )
+
+                          return True
+
+              # Ultimo tentativo: tastiera.
+              field = field_finder(page)
+
+              if field is None:
+                  log(
+                      f"{code}: campo non disponibile "
+                      "prima della tastiera."
+                  )
+
+                  return False
+
+              if not focus_input(
+                  page,
+                  field,
+                  f"Focus {code}",
+              ):
+                  return False
+
+              if not keyboard_select_airport(
+                  page,
+                  code,
+                  city,
+                  f"TENTATIVO FINALE {code}",
+              ):
+                  return False
+
+              page.wait_for_timeout(
+                  1500
+              )
+
+              # IMPORTANTISSIMO:
+              # il vecchio script considerava
+              # ArrowDown + Enter come successo.
+              # Ora verifichiamo realmente il campo.
+              current = field_finder(page)
+
+              if current is None:
+                  log(
+                      f"{code}: il DOM ha "
+                      "ricostruito il campo."
+                  )
+
+                  inspect_visible_inputs(
+                      page,
+                      f"INPUT DOPO SELEZIONE {code}",
+                  )
+
+                  current = field_finder(page)
+
+              if current is None:
+                  log(
+                      f"ERRORE: campo {code} "
+                      "non recuperabile."
+                  )
+
+                  return False
+
+              value = get_field_value(
+                  current,
+                  f"Valore finale {code}",
+              )
+
+              if not value.strip():
+                  log(
+                      f"ERRORE: {code} "
+                      "non selezionato realmente. "
+                      "Il campo è vuoto."
+                  )
+
+                  inspect_visible_inputs(
+                      page,
+                      f"INPUT FINALI DOPO FALLIMENTO {code}",
+                  )
+
+                  inspect_autocomplete_dom(
+                      page,
+                      f"DOM FINALE {code}",
+                  )
+
+                  return False
+
+              # Controllo ulteriore:
+              # il valore dovrebbe contenere città
+              # oppure codice.
+              normalized = value.upper()
+
+              if (
+                  code.upper() in normalized
+                  or city.upper() in normalized
+              ):
+                  log(
+                      f"{code}: selezione "
+                      "REALMENTE confermata."
+                  )
+
+                  return True
+
+              log(
+                  f"ATTENZIONE: {code} "
+                  f"ha valore '{value}', "
+                  "ma non contiene né codice "
+                  "né città."
+              )
 
               return False
 
@@ -564,21 +961,21 @@ jobs:
 
               for selector in selectors:
                   try:
-                      locator = page.locator(selector)
+                      locator = page.locator(
+                          selector
+                      )
 
                       count = locator.count()
 
                       for index in range(count):
-                          element = locator.nth(index)
+                          element = locator.nth(
+                              index
+                          )
 
                           if not element.is_visible():
                               continue
 
-                          if all(
-                              element != item
-                              for item in found
-                          ):
-                              found.append(element)
+                          found.append(element)
 
                   except Exception:
                       pass
@@ -603,7 +1000,7 @@ jobs:
                   )
 
                   for index in range(
-                      min(count, 50)
+                      min(count, 80)
                   ):
                       button = buttons.nth(index)
 
@@ -620,7 +1017,11 @@ jobs:
                                   type:
                                       el.type,
                                   disabled:
-                                      el.disabled
+                                      el.disabled,
+                                  id:
+                                      el.id,
+                                  className:
+                                      el.className
                               })
                               """
                           )
@@ -639,68 +1040,6 @@ jobs:
               except Exception as exc:
                   log(
                       "Errore analisi button:"
-                  )
-
-                  log(repr(exc))
-
-
-          def inspect_current_inputs(page):
-              log("")
-              log(
-                  "DIAGNOSTICA INPUT VISIBILI ATTUALI"
-              )
-              log("----------------------------------------")
-
-              try:
-                  visible_inputs = page.locator(
-                      "input:visible"
-                  )
-
-                  count = visible_inputs.count()
-
-                  log(
-                      f"Input visibili attuali: "
-                      f"{count}"
-                  )
-
-                  for index in range(
-                      min(count, 40)
-                  ):
-                      element = visible_inputs.nth(index)
-
-                      try:
-                          attrs = element.evaluate(
-                              """
-                              el => ({
-                                  type: el.type,
-                                  id: el.id,
-                                  name: el.name,
-                                  placeholder:
-                                      el.placeholder,
-                                  value:
-                                      el.value,
-                                  aria:
-                                      el.getAttribute(
-                                          "aria-label"
-                                      )
-                              })
-                              """
-                          )
-
-                          log(
-                              f"CURRENT INPUT {index}: "
-                              + json.dumps(
-                                  attrs,
-                                  ensure_ascii=False,
-                              )
-                          )
-
-                      except Exception:
-                          pass
-
-              except Exception as exc:
-                  log(
-                      "Errore diagnostica input:"
                   )
 
                   log(repr(exc))
@@ -747,6 +1086,7 @@ jobs:
 
                   return 1
 
+
               if not isinstance(
                   stations,
                   dict,
@@ -758,10 +1098,12 @@ jobs:
 
                   return 1
 
+
               log(
                   f"Stazioni presenti: "
                   f"{len(stations)}"
               )
+
 
               if ORIGIN not in stations:
                   log(
@@ -771,6 +1113,7 @@ jobs:
 
                   return 1
 
+
               origin_data = stations[ORIGIN]
 
               markets = (
@@ -778,10 +1121,12 @@ jobs:
                   or {}
               )
 
+
               log(
                   f"Mercati {ORIGIN}: "
                   f"{len(markets)}"
               )
+
 
               if DESTINATION not in markets:
                   log(
@@ -792,13 +1137,16 @@ jobs:
 
                   return 1
 
+
               market = markets[DESTINATION]
+
 
               log("")
               log(
                   f"{ORIGIN} -> {DESTINATION}"
               )
               log("----------------------------------------")
+
 
               log(
                   f"Enabled: "
@@ -820,6 +1168,7 @@ jobs:
                   f"{market.get('MaxFlightDate')}"
               )
 
+
               if not market.get("Enabled"):
                   log(
                       "ERRORE: "
@@ -827,6 +1176,7 @@ jobs:
                   )
 
                   return 1
+
 
               min_date = market.get(
                   "MinFlightDate"
@@ -836,10 +1186,12 @@ jobs:
                   "MaxFlightDate"
               )
 
+
               test_date = (
                   date.today()
                   + timedelta(days=1)
               )
+
 
               if min_date:
                   test_date = max(
@@ -848,6 +1200,7 @@ jobs:
                           min_date
                       ),
                   )
+
 
               if max_date:
                   max_date_obj = (
@@ -864,9 +1217,11 @@ jobs:
 
                       return 1
 
+
               departure_date = (
                   test_date.isoformat()
               )
+
 
               log("")
               log("RICERCA DI TEST")
@@ -892,6 +1247,7 @@ jobs:
                   "Passeggeri:   1"
               )
 
+
               # ==================================================
               # 2. BROWSER
               # ==================================================
@@ -902,10 +1258,12 @@ jobs:
               )
               log("----------------------------------------")
 
+
               api_key = os.environ.get(
                   "VOLOTEA_API_KEY",
                   "",
               ).strip()
+
 
               if api_key:
                   log(
@@ -917,14 +1275,17 @@ jobs:
                       "non configurata"
                   )
 
+
               captured_requests = []
               captured_responses = []
+
 
               with sync_playwright() as p:
 
                   browser = p.chromium.launch(
                       headless=True
                   )
+
 
                   context = browser.new_context(
                       locale="it-IT",
@@ -939,7 +1300,9 @@ jobs:
                       },
                   )
 
+
                   page = context.new_page()
+
 
                   # ==================================================
                   # REQUEST INTERCEPTION
@@ -952,11 +1315,13 @@ jobs:
                       if API_PREFIX not in url:
                           return
 
+
                       headers = (
                           request.all_headers()
                       )
 
                       safe_headers = {}
+
 
                       for key, value in headers.items():
 
@@ -977,6 +1342,7 @@ jobs:
                                   value
                               )
 
+
                       item = {
                           "method":
                               request.method,
@@ -988,9 +1354,11 @@ jobs:
                               safe_headers,
                       }
 
+
                       post_data = (
                           request.post_data
                       )
+
 
                       if post_data:
 
@@ -1006,9 +1374,11 @@ jobs:
                                   post_data[:30000]
                               )
 
+
                       captured_requests.append(
                           item
                       )
+
 
                       log("")
                       log(
@@ -1033,11 +1403,13 @@ jobs:
                           f"{url}"
                       )
 
+
                       dump_json(
                           "HEADER:",
                           safe_headers,
                           20000,
                       )
+
 
                       if "post_data" in item:
                           dump_json(
@@ -1053,6 +1425,7 @@ jobs:
                               "Payload non disponibile."
                           )
 
+
                   # ==================================================
                   # RESPONSE INTERCEPTION
                   # ==================================================
@@ -1064,6 +1437,7 @@ jobs:
                       if API_PREFIX not in url:
                           return
 
+
                       item = {
                           "status":
                               response.status,
@@ -1071,6 +1445,7 @@ jobs:
                           "url":
                               url,
                       }
+
 
                       try:
 
@@ -1080,6 +1455,7 @@ jobs:
                               body
                           )
 
+
                           content_type = (
                               response.headers.get(
                                   "content-type",
@@ -1087,9 +1463,11 @@ jobs:
                               )
                           )
 
+
                           item[
                               "content_type"
                           ] = content_type
+
 
                           if (
                               "json"
@@ -1106,15 +1484,18 @@ jobs:
                               except Exception:
                                   pass
 
+
                       except Exception as exc:
 
                           item["error"] = (
                               repr(exc)
                           )
 
+
                       captured_responses.append(
                           item
                       )
+
 
                       log("")
                       log(
@@ -1144,6 +1525,7 @@ jobs:
                           f"{item.get('size', 0)} bytes"
                       )
 
+
                       if "json" in item:
 
                           dump_json(
@@ -1151,6 +1533,7 @@ jobs:
                               item["json"],
                               30000,
                           )
+
 
                   page.on(
                       "request",
@@ -1162,6 +1545,7 @@ jobs:
                       handle_response,
                   )
 
+
                   # ==================================================
                   # 3. APERTURA
                   # ==================================================
@@ -1170,6 +1554,7 @@ jobs:
                   log(
                       f"Apertura: {BOOKING_URL}"
                   )
+
 
                   try:
                       page.goto(
@@ -1187,9 +1572,11 @@ jobs:
 
                       log(repr(exc))
 
+
                   page.wait_for_timeout(
                       8000
                   )
+
 
                   log("")
                   log(
@@ -1199,6 +1586,7 @@ jobs:
                   log(
                       f"Titolo: {page.title()}"
                   )
+
 
                   # ==================================================
                   # 4. COOKIE
@@ -1210,6 +1598,7 @@ jobs:
                   )
                   log("----------------------------------------")
 
+
                   cookie_selectors = [
                       "button:has-text('Aceptar sólo las esenciales')",
                       "button:has-text('Accept only necessary')",
@@ -1219,7 +1608,9 @@ jobs:
                       "button[aria-label*='essenziali']",
                   ]
 
+
                   cookie_closed = False
+
 
                   for selector in cookie_selectors:
 
@@ -1254,94 +1645,42 @@ jobs:
                       except Exception:
                           pass
 
+
                   if not cookie_closed:
                       log(
                           "Cookie banner non rilevato "
                           "o già chiuso."
                       )
 
+
                   # ==================================================
                   # 5. FORM INIZIALE
                   # ==================================================
 
-                  log("")
-                  log(
-                      "4. ANALISI FORM VISIBILE"
-                  )
-                  log("----------------------------------------")
-
-                  visible_inputs = page.locator(
-                      "input:visible"
-                  ).all()
-
-                  log(
-                      f"Input visibili: "
-                      f"{len(visible_inputs)}"
+                  inspect_visible_inputs(
+                      page,
+                      "4. ANALISI FORM VISIBILE",
                   )
 
-                  for index, element in enumerate(
-                      visible_inputs[:40]
-                  ):
-
-                      try:
-                          attrs = element.evaluate(
-                              """
-                              el => ({
-                                  type: el.type,
-                                  name: el.name,
-                                  id: el.id,
-                                  placeholder:
-                                      el.placeholder,
-                                  value:
-                                      el.value,
-                                  aria:
-                                      el.getAttribute(
-                                          "aria-label"
-                                      )
-                              })
-                              """
-                          )
-
-                          log(
-                              f"VISIBLE INPUT {index}: "
-                              + json.dumps(
-                                  attrs,
-                                  ensure_ascii=False,
-                              )
-                          )
-
-                      except Exception:
-                          pass
 
                   # ==================================================
-                  # 6. CAMPI
+                  # 6. CAMPO PARTENZA
                   # ==================================================
 
                   log("")
                   log(
-                      "5. INDIVIDUAZIONE CAMPI"
+                      "5. INDIVIDUAZIONE CAMPO PARTENZA"
                   )
                   log("----------------------------------------")
 
-                  origin_field = page.locator(
-                      "#input-text_sf-origin:visible"
-                  ).first
 
-                  destination_field = page.locator(
-                      "#input-text_sf-destination:visible"
-                  ).first
-
-                  log(
-                      f"Origin visibile: "
-                      f"{origin_field.count()}"
+                  origin_field = find_current_origin(
+                      page
                   )
 
-                  log(
-                      f"Destination visibile: "
-                      f"{destination_field.count()}"
-                  )
 
-                  if origin_field.count() == 0:
+                  if origin_field is None:
+
                       log(
                           "ERRORE: campo partenza "
                           "non trovato."
@@ -1356,169 +1695,133 @@ jobs:
 
                       return 1
 
-                  # ==================================================
-                  # 7. PARTENZA
-                  # ==================================================
 
-                  log("")
                   log(
-                      "6. COMPILAZIONE PARTENZA"
-                  )
-                  log("----------------------------------------")
-
-                  if not clear_and_type(
-                      page,
-                      origin_field,
-                      ORIGIN,
-                      "Campo partenza",
-                  ):
-
-                      log(
-                          "ERRORE: impossibile "
-                          "compilare VRN."
-                      )
-
-                      page.screenshot(
-                          path="/tmp/volotea-origin-fill-error.png",
-                          full_page=True,
-                      )
-
-                      browser.close()
-
-                      return 1
-
-                  page.wait_for_timeout(
-                      2000
+                      "Campo partenza trovato."
                   )
 
-                  inspect_visible_text(
-                      page,
-                      [
-                          "VRN",
-                          "Verona",
-                          "Italy",
-                      ],
-                  )
 
                   # ==================================================
-                  # 8. SELEZIONE PARTENZA
+                  # 7. SELEZIONE PARTENZA
                   # ==================================================
 
-                  selection_ok = select_airport(
+                  if not select_airport(
                       page,
                       ORIGIN,
-                      "Verona",
-                      "7. SELEZIONE PARTENZA",
-                  )
-
-                  page.wait_for_timeout(
-                      1500
-                  )
-
-                  log(
-                      f"Esito funzione selezione {ORIGIN}: "
-                      f"{selection_ok}"
-                  )
-
-                  # ==================================================
-                  # 9. VERIFICA PARTENZA
-                  # ==================================================
-
-                  log("")
-                  log(
-                      "8. VERIFICA PARTENZA"
-                  )
-                  log("----------------------------------------")
-
-                  origin_field = page.locator(
-                      "#input-text_sf-origin:visible"
-                  ).first
-
-                  if origin_field.count() == 0:
-
-                      log(
-                          "ERRORE: campo partenza "
-                          "non più disponibile dopo "
-                          "la selezione."
-                      )
-
-                      inspect_current_inputs(
-                          page
-                      )
-
-                      page.screenshot(
-                          path="/tmp/volotea-origin-after-selection-error.png",
-                          full_page=True,
-                      )
-
-                      browser.close()
-
-                      return 1
-
-                  origin_value = get_field_value(
-                      origin_field,
-                      "Partenza",
-                  )
-
-                  log(
-                      f"Valore partenza dopo selezione: "
-                      f"'{origin_value}'"
-                  )
-
-                  origin_upper = (
-                      origin_value.upper()
-                  )
-
-                  if (
-                      "VERONA" not in origin_upper
-                      and ORIGIN not in origin_upper
+                      ORIGIN_CITY,
+                      "6. SELEZIONE PARTENZA",
+                      find_current_origin,
                   ):
 
                       log("")
                       log(
-                          "ERRORE: la selezione "
-                          "dell'aeroporto non è stata "
-                          "verificata."
+                          "ERRORE: impossibile "
+                          "selezionare realmente "
+                          "l'aeroporto di partenza."
                       )
+
+                      try:
+                          page.screenshot(
+                              path="/tmp/volotea-origin-selection-error.png",
+                              full_page=True,
+                          )
+                      except Exception:
+                          pass
+
+                      browser.close()
+
+                      return 1
+
+
+                  # ==================================================
+                  # 8. VERIFICA PARTENZA
+                  # ==================================================
+
+                  log("")
+                  log(
+                      "7. VERIFICA PARTENZA"
+                  )
+                  log("----------------------------------------")
+
+
+                  origin_field = find_current_origin(
+                      page
+                  )
+
+
+                  if origin_field is None:
 
                       log(
-                          f"Valore ottenuto: "
-                          f"'{origin_value}'"
+                          "ERRORE: campo partenza "
+                          "non recuperabile dopo "
+                          "la selezione."
                       )
 
-                      page.screenshot(
-                          path="/tmp/volotea-origin-selection-failed.png",
-                          full_page=True,
+                      inspect_visible_inputs(
+                          page,
+                          "DIAGNOSTICA INPUT PARTENZA",
                       )
 
                       browser.close()
 
                       return 1
 
-                  log(
-                      "OK: aeroporto di partenza "
-                      "verificato."
+
+                  origin_value = (
+                      get_field_value(
+                          origin_field,
+                          "Partenza",
+                      )
                   )
 
+
+                  if not origin_value.strip():
+
+                      log(
+                          "ERRORE: il campo partenza "
+                          "è vuoto."
+                      )
+
+                      browser.close()
+
+                      return 1
+
+
+                  log(
+                      "Partenza confermata: "
+                      f"'{origin_value}'"
+                  )
+
+
                   # ==================================================
-                  # 10. DESTINAZIONE
+                  # 9. DESTINAZIONE
                   # ==================================================
 
                   log("")
                   log(
-                      "9. COMPILAZIONE DESTINAZIONE"
+                      "8. INDIVIDUAZIONE "
+                      "CAMPO DESTINAZIONE"
                   )
                   log("----------------------------------------")
 
-                  destination_field = page.locator(
-                      "#input-text_sf-destination:visible"
-                  ).first
 
-                  if destination_field.count() == 0:
+                  destination_field = (
+                      find_current_destination(
+                          page
+                      )
+                  )
+
+
+                  if destination_field is None:
 
                       log(
                           "ERRORE: campo destinazione "
                           "non trovato dopo VRN."
+                      )
+
+                      inspect_visible_inputs(
+                          page,
+                          "INPUT DOPO PARTENZA",
                       )
 
                       page.screenshot(
@@ -1530,88 +1833,68 @@ jobs:
 
                       return 1
 
-                  if not clear_and_type(
+
+                  # ==================================================
+                  # 10. SELEZIONE DESTINAZIONE
+                  # ==================================================
+
+                  if not select_airport(
                       page,
-                      destination_field,
                       DESTINATION,
-                      "Campo destinazione",
+                      DESTINATION_CITY,
+                      "9. SELEZIONE DESTINAZIONE",
+                      find_current_destination,
                   ):
 
+                      log("")
                       log(
                           "ERRORE: impossibile "
-                          "compilare CTA."
+                          "selezionare realmente "
+                          "l'aeroporto di destinazione."
                       )
 
-                      page.screenshot(
-                          path="/tmp/volotea-destination-fill-error.png",
-                          full_page=True,
-                      )
+                      try:
+                          page.screenshot(
+                              path="/tmp/volotea-destination-selection-error.png",
+                              full_page=True,
+                          )
+                      except Exception:
+                          pass
 
                       browser.close()
 
                       return 1
 
-                  page.wait_for_timeout(
-                      2000
-                  )
-
-                  inspect_visible_text(
-                      page,
-                      [
-                          "CTA",
-                          "Catania",
-                          "Italy",
-                      ],
-                  )
 
                   # ==================================================
-                  # 11. SELEZIONE DESTINAZIONE
-                  # ==================================================
-
-                  selection_ok = select_airport(
-                      page,
-                      DESTINATION,
-                      "Catania",
-                      "10. SELEZIONE DESTINAZIONE",
-                  )
-
-                  page.wait_for_timeout(
-                      1500
-                  )
-
-                  log(
-                      f"Esito funzione selezione {DESTINATION}: "
-                      f"{selection_ok}"
-                  )
-
-                  # ==================================================
-                  # 12. VERIFICA DESTINAZIONE
+                  # 11. VERIFICA DESTINAZIONE
                   # ==================================================
 
                   log("")
                   log(
-                      "11. VERIFICA DESTINAZIONE"
+                      "10. VERIFICA DESTINAZIONE"
                   )
                   log("----------------------------------------")
 
-                  destination_field = page.locator(
-                      "#input-text_sf-destination:visible"
-                  ).first
 
-                  if destination_field.count() == 0:
+                  destination_field = (
+                      find_current_destination(
+                          page
+                      )
+                  )
+
+
+                  if destination_field is None:
 
                       log(
                           "ERRORE: campo destinazione "
-                          "non più disponibile."
-                      )
-
-                      inspect_current_inputs(
-                          page
+                          "non recuperabile."
                       )
 
                       browser.close()
 
                       return 1
+
 
                   destination_value = (
                       get_field_value(
@@ -1620,50 +1903,35 @@ jobs:
                       )
                   )
 
-                  destination_upper = (
-                      destination_value.upper()
-                  )
 
-                  if (
-                      "CATANIA" not in destination_upper
-                      and DESTINATION not in destination_upper
-                  ):
-
-                      log("")
-                      log(
-                          "ERRORE: la selezione "
-                          "della destinazione non è "
-                          "stata verificata."
-                      )
+                  if not destination_value.strip():
 
                       log(
-                          f"Valore ottenuto: "
-                          f"'{destination_value}'"
-                      )
-
-                      page.screenshot(
-                          path="/tmp/volotea-destination-selection-failed.png",
-                          full_page=True,
+                          "ERRORE: il campo destinazione "
+                          "è vuoto."
                       )
 
                       browser.close()
 
                       return 1
 
+
                   log(
-                      "OK: aeroporto di destinazione "
-                      "verificato."
+                      "Destinazione confermata: "
+                      f"'{destination_value}'"
                   )
 
+
                   # ==================================================
-                  # 13. DATA
+                  # 12. DATA
                   # ==================================================
 
                   log("")
                   log(
-                      "12. RICERCA CAMPO DATA"
+                      "11. RICERCA CAMPO DATA"
                   )
                   log("----------------------------------------")
+
 
                   date_inputs = (
                       find_visible_date_inputs(
@@ -1671,10 +1939,12 @@ jobs:
                       )
                   )
 
+
                   log(
                       f"Campi data candidati: "
                       f"{len(date_inputs)}"
                   )
+
 
                   for index, element in enumerate(
                       date_inputs
@@ -1710,8 +1980,9 @@ jobs:
                       except Exception:
                           pass
 
+
                   # ==================================================
-                  # 14. APERTURA DATEPICKER
+                  # 13. DATA / DATEPICKER
                   # ==================================================
 
                   if not date_inputs:
@@ -1737,6 +2008,8 @@ jobs:
                               "Aug",
                               "August",
                               "2026",
+                              "Partenza",
+                              "Ritorno",
                           ],
                       )
 
@@ -1749,6 +2022,7 @@ jobs:
                           "Provo a compilare "
                           "il primo campo data."
                       )
+
 
                       try:
                           if date_field.get_attribute(
@@ -1776,6 +2050,7 @@ jobs:
                                   delay=50,
                               )
 
+
                           log(
                               "Data inserita."
                           )
@@ -1788,18 +2063,21 @@ jobs:
 
                           log(repr(exc))
 
+
                   # ==================================================
-                  # 15. ANALISI CONTROLLI
+                  # 14. ANALISI CONTROLLI
                   # ==================================================
 
                   log("")
                   log(
-                      "13. ANALISI CONTROLLI "
+                      "12. ANALISI CONTROLLI "
                       "DOPO COMPILAZIONE"
                   )
                   log("----------------------------------------")
 
+
                   inspect_buttons(page)
+
 
                   inspect_visible_text(
                       page,
@@ -1815,15 +2093,17 @@ jobs:
                       ],
                   )
 
+
                   # ==================================================
-                  # 16. TENTATIVO CLICK SEARCH
+                  # 15. TENTATIVO SEARCH
                   # ==================================================
 
                   log("")
                   log(
-                      "14. TENTATIVO CLICK RICERCA"
+                      "13. TENTATIVO CLICK RICERCA"
                   )
                   log("----------------------------------------")
+
 
                   search_selectors = [
                       "button:has-text('Search')",
@@ -1838,7 +2118,9 @@ jobs:
                       "[role='button']:has-text('Buscar')",
                   ]
 
+
                   search_clicked = False
+
 
                   for selector in search_selectors:
 
@@ -1847,16 +2129,20 @@ jobs:
                               selector
                           ).first
 
+
                           if locator.count() == 0:
                               continue
 
+
                           if not locator.is_visible():
                               continue
+
 
                           log(
                               f"Pulsante candidato: "
                               f"{selector}"
                           )
+
 
                           if safe_click(
                               locator,
@@ -1874,28 +2160,32 @@ jobs:
                       except Exception:
                           pass
 
+
                   if not search_clicked:
                       log(
                           "Nessun pulsante di ricerca "
                           "identificato automaticamente."
                       )
 
+
                   # ==================================================
-                  # 17. NETWORK
+                  # 16. NETWORK
                   # ==================================================
 
                   log("")
                   log(
-                      "15. ATTESA NETWORK"
+                      "14. ATTESA NETWORK"
                   )
                   log("----------------------------------------")
+
 
                   page.wait_for_timeout(
                       5000
                   )
 
+
                   # ==================================================
-                  # 18. SCREENSHOT
+                  # 17. SCREENSHOT
                   # ==================================================
 
                   try:
@@ -1916,15 +2206,17 @@ jobs:
 
                       log(repr(exc))
 
+
                   # ==================================================
-                  # 19. RISULTATO
+                  # 18. RISULTATO
                   # ==================================================
 
                   log("")
                   log(
-                      "16. RISULTATO TEST"
+                      "15. RISULTATO TEST"
                   )
                   log("----------------------------------------")
+
 
                   log(
                       "Valore finale partenza: "
@@ -1946,6 +2238,7 @@ jobs:
                       f"{len(captured_responses)}"
                   )
 
+
                   if captured_requests:
 
                       log("")
@@ -1964,7 +2257,9 @@ jobs:
                           "intercettata."
                       )
 
+
                   browser.close()
+
 
               log("")
               log(
