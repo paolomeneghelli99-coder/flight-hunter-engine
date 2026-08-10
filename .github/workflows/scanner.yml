@@ -284,19 +284,19 @@ jobs:
           echo "OK: FH_ACCESS_TOKEN disponibile"
           echo "Il valore del token non verrà mostrato."
 
-      - name: Test Volotea with Playwright
+      - name: Test Volotea booking engine
         shell: bash
         run: |
           set -e
 
           echo "========================================"
-          echo "TEST VOLOTEA PLAYWRIGHT"
+          echo "TEST VOLOTEA BOOKING ENGINE"
           echo "========================================"
 
           python - <<'PY'
           from playwright.sync_api import sync_playwright
 
-          URL = "https://www.volotea.com/"
+          URL = "https://book.volotea.com/booking/flights"
 
           with sync_playwright() as p:
               browser = p.chromium.launch(
@@ -304,27 +304,38 @@ jobs:
               )
 
               page = browser.new_page(
-                  locale="it-IT"
+                  locale="it-IT",
+                  viewport={
+                      "width": 1440,
+                      "height": 1000
+                  }
               )
 
-              print("Apertura Volotea...")
+              print("Apertura booking engine Volotea...")
 
-              page.goto(
+              response = page.goto(
                   URL,
                   wait_until="domcontentloaded",
                   timeout=60000
               )
 
+              print("")
+              print("HTTP status:")
+              print(
+                  response.status
+                  if response
+                  else "NESSUNA RISPOSTA"
+              )
+
+              print("")
               print("URL finale:")
               print(page.url)
 
+              print("")
               print("Titolo:")
               print(page.title())
 
-              print("")
-              print("Attesa caricamento pagina...")
-
-              page.wait_for_timeout(5000)
+              page.wait_for_timeout(10000)
 
               print("")
               print("URL dopo caricamento:")
@@ -335,7 +346,19 @@ jobs:
               print(page.title())
 
               print("")
-              print("Test Volotea completato.")
+              print("Numero elementi input:")
+              print(
+                  page.locator("input").count()
+              )
+
+              print("")
+              print("Numero elementi button:")
+              print(
+                  page.locator("button").count()
+              )
+
+              print("")
+              print("Test booking engine completato.")
 
               browser.close()
           PY
