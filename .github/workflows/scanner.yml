@@ -115,14 +115,12 @@ jobs:
           echo "${FH_BACKEND_URL%/}/auth/v1/token"
 
           RESPONSE=$(curl -sS \
+            --fail-with-body \
             -X POST \
             "$AUTH_URL" \
             -H "apikey: $FH_PUBLISHABLE_KEY" \
             -H "Content-Type: application/json" \
             -d "{\"email\":\"$FH_EMAIL\",\"password\":\"$FH_PASSWORD\"}")
-
-          echo ""
-          echo "Risposta autenticazione ricevuta."
 
           ACCESS_TOKEN=$(python -c '
           import json
@@ -163,20 +161,21 @@ jobs:
 
           echo "Autenticazione completata."
 
-      - name: Inspect JWT claims
+      - name: Validate JWT lifetime
         shell: bash
         run: |
           set -e
 
           echo "========================================"
-          echo "VERIFICA JWT"
+          echo "CONTROLLO VALIDITÀ JWT"
           echo "========================================"
 
           python - <<'PY'
           import os
           import base64
           import json
-          import datetime
+          import time
+          from datetime import datetime, timezone
 
           token = os.environ.get("FH_ACCESS_TOKEN", "")
 
@@ -187,61 +186,83 @@ jobs:
           parts = token.split(".")
 
           if len(parts) != 3:
-              print("ERRORE: JWT non valido come struttura")
+              print("ERRORE: token non strutturato come JWT")
               raise SystemExit(1)
 
           payload = parts[1]
           payload += "=" * (-len(payload) % 4)
 
           try:
-              data = json.loads(
+              claims = json.loads(
                   base64.urlsafe_b64decode(payload)
               )
           except Exception as exc:
-              print(
-                  f"ERRORE: impossibile leggere il payload JWT: {exc}"
-              )
+              print(f"ERRORE lettura JWT: {exc}")
+              raise SystemExit(1)
+
+          now = int(time.time())
+
+          iat = claims.get("iat")
+          exp = claims.get("exp")
+
+          if not exp:
+              print("ERRORE: il JWT non contiene exp")
               raise SystemExit(1)
 
           print("JWT ricevuto: SI")
+          print("issuer:", claims.get("iss", "MANCANTE"))
+          print("audience:", claims.get("aud", "MANCANTE"))
+          print("role:", claims.get("role", "MANCANTE"))
 
-          print(
-              "issuer (iss):",
-              data.get("iss", "MANCANTE")
-          )
-
-          print(
-              "audience (aud):",
-              data.get("aud", "MANCANTE")
-          )
-
-          print(
-              "subject (sub):",
-              "PRESENTE" if data.get("sub") else "MANCANTE"
-          )
-
-          print(
-              "role:",
-              data.get("role", "MANCANTE")
-          )
-
-          print(
-              "email:",
-              data.get("email", "MANCANTE")
-          )
-
-          exp = data.get("exp")
-
-          if exp:
+          if iat:
               print(
-                  "scadenza:",
-                  datetime.datetime.fromtimestamp(
-                      exp,
-                      datetime.timezone.utc
+                  "emesso:",
+                  datetime.fromtimestamp(
+                      iat,
+                      timezone.utc
                   ).isoformat()
               )
-          else:
-              print("scadenza: MANCANTE")
+
+          print(
+              "scadenza:",
+              datetime.fromtimestamp(
+                  exp,
+                  timezone.utc
+              ).isoformat()
+          )
+
+          print(
+              "ora server:",
+              datetime.fromtimestamp(
+                  now,
+                  timezone.utc
+              ).isoformat()
+          )
+
+          remaining = exp - now
+
+          print(
+              f"validità residua: {remaining} secondi"
+          )
+
+          if remaining <= 0:
+              print("")
+              print("ERRORE: JWT GIÀ SCADUTO")
+              print("Il token ottenuto da Supabase non è utilizzabile.")
+              raise SystemExit(1)
+
+          if remaining < 60:
+              print("")
+              print(
+                  "ERRORE: JWT scade tra meno di 60 secondi."
+              )
+              print(
+                  "Non è sufficientemente sicuro per eseguire lo scanner."
+              )
+              raise SystemExit(1)
+
+          print("")
+          print("OK: JWT valido e non scaduto.")
           PY
 
       - name: Verify access token
