@@ -35,7 +35,7 @@ jobs:
 
 
       # ============================================================
-      # INSTALLAZIONE DIPENDENZE
+      # DIPENDENZE
       # ============================================================
 
       - name: Install dependencies
@@ -51,6 +51,7 @@ jobs:
           python -m pip --version
 
           python -m pip install --upgrade pip
+
           python -m pip install -r requirements.txt
 
           echo ""
@@ -64,16 +65,6 @@ jobs:
 
       # ============================================================
       # TEST VOLOTEA
-      #
-      # Il test:
-      # 1. verifica stations.json
-      # 2. apre realmente il frontend Volotea
-      # 3. raccoglie le richieste generate dal frontend
-      # 4. individua la richiesta flights/search
-      # 5. recupera automaticamente gli header della richiesta reale
-      # 6. non utilizza token/cookie hardcoded
-      #
-      # Il test Volotea NON blocca il workflow.
       # ============================================================
 
       - name: Test Volotea
@@ -81,975 +72,45 @@ jobs:
         env:
           VOLOTEA_API_KEY: ${{ secrets.VOLOTEA_API_KEY }}
         run: |
-          set -o pipefail
+          set -e
 
           echo "========================================"
           echo "TEST VOLOTEA"
           echo "========================================"
 
-          python - <<'PY'
-          import json
-          import os
-          import sys
-          from datetime import date, timedelta
-
-          import requests
-          from playwright.sync_api import sync_playwright
-
-
-          STATIONS_URL = (
-              "https://json.volotea.com/"
-              "dist/stations/stations.json"
-          )
-
-          SEARCH_URL = (
-              "https://api.volotea.com/"
-              "api/spa/voe/v1/flights/search"
-          )
-
-          BOOKING_URL = "https://book.volotea.com/"
-
-          USER_AGENT = (
-              "Mozilla/5.0 "
-              "(Linux; Android 6.0; Nexus 5 "
-              "Build/MRA58N) "
-              "AppleWebKit/537.36 "
-              "(KHTML, like Gecko) "
-              "Chrome/147.0.0.0 "
-              "Mobile Safari/537.36"
-          )
-
-
-          # ========================================================
-          # FUNZIONE DI LOG
-          # ========================================================
-
-          def log(message=""):
-              print(message, flush=True)
-
-
-          # ========================================================
-          # 1. DOWNLOAD STATIONS
-          # ========================================================
-
-          log("")
-          log("1. DOWNLOAD STATIONS")
-          log("----------------------------------------")
-
-          try:
-              stations_response = requests.get(
-                  STATIONS_URL,
-                  timeout=60,
-                  headers={
-                      "User-Agent": USER_AGENT,
-                      "Accept": "application/json",
-                      "Accept-Language": (
-                          "it-IT,it;q=0.9,en;q=0.8"
-                      ),
-                  },
-              )
-
-              log(
-                  f"HTTP status: "
-                  f"{stations_response.status_code}"
-              )
-
-              stations_response.raise_for_status()
-
-              stations = stations_response.json()
-
-          except Exception as exc:
-              log("")
-              log(
-                  "ERRORE DOWNLOAD STATIONS: "
-                  f"{repr(exc)}"
-              )
-              sys.exit(1)
-
-
-          if not isinstance(stations, dict):
-              log(
-                  "ERRORE: stations.json "
-                  "non contiene un dizionario."
-              )
-              sys.exit(1)
-
-
-          log(
-              f"Stazioni presenti: {len(stations)}"
-          )
-
-
-          if "VRN" not in stations:
-              log(
-                  "ERRORE: VRN non trovato "
-                  "in stations.json."
-              )
-              sys.exit(1)
-
-
-          vrn = stations["VRN"]
-
-          markets = vrn.get("Markets") or {}
-
-          log(
-              f"Mercati VRN: {len(markets)}"
-          )
-
-
-          if "CTA" not in markets:
-              log(
-                  "ERRORE: CTA non presente "
-                  "nei Markets di VRN."
-              )
-              sys.exit(1)
-
-
-          market = markets["CTA"]
-
-
-          log("")
-          log("VRN -> CTA")
-          log("----------------------------------------")
-
-          log(
-              f"Enabled: {market.get('Enabled')}"
-          )
-
-          log(
-              f"FlightType: {market.get('FlightType')}"
-          )
-
-          log(
-              f"MinFlightDate: "
-              f"{market.get('MinFlightDate')}"
-          )
-
-          log(
-              f"MaxFlightDate: "
-              f"{market.get('MaxFlightDate')}"
-          )
-
-
-          if not market.get("Enabled"):
-              log(
-                  "ERRORE: VRN -> CTA "
-                  "non è Enabled."
-              )
-              sys.exit(1)
-
-
-          min_date = market.get("MinFlightDate")
-          max_date = market.get("MaxFlightDate")
-
-          today = date.today()
-
-          test_date = today + timedelta(days=1)
-
-
-          if min_date:
-              test_date = max(
-                  test_date,
-                  date.fromisoformat(min_date)
-              )
-
-
-          if max_date:
-              max_date_obj = date.fromisoformat(
-                  max_date
-              )
-
-              if test_date > max_date_obj:
-                  log(
-                      "ERRORE: nessuna data valida "
-                      "disponibile per il test."
-                  )
-                  sys.exit(1)
-
-
-          data_str = test_date.isoformat()
-
-
-          log("")
-          log(
-              f"Data utilizzata per il test: "
-              f"{data_str}"
-          )
-
-
-          # ========================================================
-          # 2. PREPARAZIONE PAYLOAD
-          # ========================================================
-
-          payload = {
-              "abTastyExperiments": [],
-
-              "codes": {
-                  "currency": "EUR",
-                  "promotionCode": "",
-                  "bookingType": 2,
-                  "residentType": "NONE",
-              },
-
-              "criteria": [
-                  {
-                      "beginDate": data_str,
-                      "endDate": data_str,
-                      "selectedDate": data_str,
-                      "origin": "VRN",
-                      "destination": "CTA",
-                  }
-              ],
-
-              "fareTypesToRequest": [
-                  "R",
-                  "S",
-                  "SP",
-              ],
-
-              "passengers": [
-                  {
-                      "type": "ADT",
-                      "count": 1,
-                  }
-              ],
-          }
-
-
-          log("")
-          log("2. PAYLOAD SEARCH API")
-          log("----------------------------------------")
-
-          log(
-              json.dumps(
-                  payload,
-                  indent=2,
-                  ensure_ascii=False
-              )
-          )
-
-
-          # ========================================================
-          # 3. APERTURA FRONTEND
-          # ========================================================
-
-          log("")
-          log("3. APERTURA FRONTEND VOLOTEA")
-          log("----------------------------------------")
-
-
-          captured_requests = []
-          captured_responses = []
-
-
-          with sync_playwright() as p:
-
-              browser = None
-
-              try:
-
-                  browser = p.chromium.launch(
-                      headless=True
-                  )
-
-
-                  context = browser.new_context(
-                      locale="it-IT",
-                      user_agent=USER_AGENT,
-                      viewport={
-                          "width": 390,
-                          "height": 844,
-                      },
-                      extra_http_headers={
-                          "Accept-Language":
-                              "it-IT,it;q=0.9,en;q=0.8",
-                      },
-                  )
-
-
-                  page = context.new_page()
-
-
-                  # =================================================
-                  # INTERCETTA TUTTE LE RICHIESTE API VOLOTEA
-                  # =================================================
-
-                  def on_request(request):
-
-                      url = request.url.lower()
-
-                      if (
-                          "api.volotea.com" in url
-                          and (
-                              "flights/search" in url
-                              or "/api/spa/" in url
-                          )
-                      ):
-
-                          headers = dict(
-                              request.headers
-                          )
-
-                          captured_requests.append(
-                              {
-                                  "url": request.url,
-                                  "method": request.method,
-                                  "headers": headers,
-                                  "post_data":
-                                      request.post_data,
-                              }
-                          )
-
-                          log("")
-                          log(
-                              "RICHIESTA VOLOTEA "
-                              "INTERCETTATA"
-                          )
-
-                          log(
-                              f"URL: {request.url}"
-                          )
-
-                          log(
-                              f"Metodo: "
-                              f"{request.method}"
-                          )
-
-                          log(
-                              "x-api-key: "
-                              + (
-                                  "PRESENTE"
-                                  if headers.get(
-                                      "x-api-key"
-                                  )
-                                  else "ASSENTE"
-                              )
-                          )
-
-                          log(
-                              "x-client-session: "
-                              + (
-                                  "PRESENTE"
-                                  if headers.get(
-                                      "x-client-session"
-                                  )
-                                  else "ASSENTE"
-                              )
-                          )
-
-                          log(
-                              "x-session-token: "
-                              + (
-                                  "PRESENTE"
-                                  if headers.get(
-                                      "x-session-token"
-                                  )
-                                  else "ASSENTE"
-                              )
-                          )
-
-
-                  def on_response(response):
-
-                      url = response.url.lower()
-
-                      if (
-                          "api.volotea.com" in url
-                          and "flights/search" in url
-                      ):
-
-                          captured_responses.append(
-                              {
-                                  "url": response.url,
-                                  "status":
-                                      response.status,
-                              }
-                          )
-
-                          log("")
-                          log(
-                              "RISPOSTA SEARCH API "
-                              "INTERCETTATA"
-                          )
-
-                          log(
-                              f"HTTP status: "
-                              f"{response.status}"
-                          )
-
-
-                  page.on(
-                      "request",
-                      on_request
-                  )
-
-                  page.on(
-                      "response",
-                      on_response
-                  )
-
-
-                  log("")
-                  log(
-                      f"Apertura: {BOOKING_URL}"
-                  )
-
-
-                  try:
-
-                      page.goto(
-                          BOOKING_URL,
-                          wait_until="domcontentloaded",
-                          timeout=90000,
-                      )
-
-                  except Exception as exc:
-
-                      log("")
-                      log(
-                          "ATTENZIONE: errore durante "
-                          "l'apertura iniziale:"
-                      )
-
-                      log(
-                          repr(exc)
-                      )
-
-
-                  page.wait_for_timeout(8000)
-
-
-                  log("")
-                  log(
-                      f"URL finale: {page.url}"
-                  )
-
-
-                  cookies = context.cookies()
-
-                  log(
-                      f"Cookie browser: "
-                      f"{len(cookies)}"
-                  )
-
-
-                  # =================================================
-                  # ANALISI LOCAL STORAGE
-                  # =================================================
-
-                  local_storage = {}
-
-                  try:
-
-                      local_storage = page.evaluate(
-                          """
-                          () => {
-                              const result = {};
-
-                              for (
-                                  let i = 0;
-                                  i < localStorage.length;
-                                  i++
-                              ) {
-                                  const key =
-                                      localStorage.key(i);
-
-                                  result[key] =
-                                      localStorage.getItem(key);
-                              }
-
-                              return result;
-                          }
-                          """
-                      )
-
-                  except Exception as exc:
-
-                      log(
-                          "LocalStorage non leggibile: "
-                          f"{repr(exc)}"
-                      )
-
-
-                  log("")
-                  log("4. ANALISI SESSIONE")
-                  log("----------------------------------------")
-
-                  log(
-                      "Elementi localStorage: "
-                      f"{len(local_storage)}"
-                  )
-
-
-                  relevant_keys = []
-
-                  for key in local_storage:
-
-                      lower = key.lower()
-
-                      if any(
-                          value in lower
-                          for value in (
-                              "session",
-                              "token",
-                              "api",
-                              "client",
-                          )
-                      ):
-                          relevant_keys.append(
-                              key
-                          )
-
-
-                  if relevant_keys:
-
-                      log(
-                          "Chiavi potenzialmente "
-                          "rilevanti:"
-                      )
-
-                      for key in relevant_keys:
-                          log(
-                              f" - {key}"
-                          )
-
-                  else:
-
-                      log(
-                          "Nessuna chiave evidente "
-                          "di sessione/token."
-                      )
-
-
-                  # =================================================
-                  # 5. TENTATIVO DI ESEGUIRE LA SEARCH
-                  #
-                  # Viene eseguita DAL CONTESTO DEL BROWSER.
-                  #
-                  # Questo è importante perché il browser possiede
-                  # cookie, sessione, anti-bot e contesto Volotea.
-                  # =================================================
-
-                  log("")
-                  log("5. ESECUZIONE SEARCH DAL BROWSER")
-                  log("----------------------------------------")
-
-
-                  browser_result = page.evaluate(
-                      """
-                      async ({url, payload}) => {
-
-                          try {
-
-                              const response =
-                                  await fetch(
-                                      url,
-                                      {
-                                          method: "POST",
-
-                                          credentials:
-                                              "include",
-
-                                          headers: {
-                                              "Accept":
-                                                  "application/json",
-
-                                              "Content-Type":
-                                                  "application/json"
-                                          },
-
-                                          body:
-                                              JSON.stringify(
-                                                  payload
-                                              )
-                                      }
-                                  );
-
-                              const text =
-                                  await response.text();
-
-                              return {
-                                  status:
-                                      response.status,
-
-                                  ok:
-                                      response.ok,
-
-                                  text:
-                                      text.slice(
-                                          0,
-                                          15000
-                                      )
-                              };
-
-                          } catch (error) {
-
-                              return {
-                                  status: 0,
-                                  ok: false,
-                                  error:
-                                      String(error)
-                              };
-                          }
-                      }
-                      """,
-                      {
-                          "url": SEARCH_URL,
-                          "payload": payload,
-                      }
-                  )
-
-
-                  status = browser_result.get(
-                      "status",
-                      0
-                  )
-
-
-                  log("")
-                  log(
-                      f"HTTP status browser: "
-                      f"{status}"
-                  )
-
-
-                  # =================================================
-                  # 6. ANALISI RISPOSTA
-                  # =================================================
-
-                  if status == 200:
-
-                      text = browser_result.get(
-                          "text",
-                          ""
-                      )
-
-                      log("")
-                      log(
-                          "========================================"
-                      )
-
-                      log(
-                          "VOLOTEA SEARCH API -> HTTP 200"
-                      )
-
-                      log(
-                          "========================================"
-                      )
-
-
-                      try:
-
-                          response_json = json.loads(
-                              text
-                          )
-
-                      except Exception:
-
-                          response_json = None
-
-
-                      if isinstance(
-                          response_json,
-                          (dict, list)
-                      ):
-
-                          log("")
-                          log(
-                              "Risposta JSON ricevuta: SI"
-                          )
-
-                          log(
-                              "Dimensione risposta: "
-                              f"{len(text)} caratteri"
-                          )
-
-
-                          # =========================================
-                          # CERCA VOLI
-                          # =========================================
-
-                          flights = []
-
-
-                          def visit(obj):
-
-                              if isinstance(
-                                  obj,
-                                  dict
-                              ):
-
-                                  if (
-                                      "fares" in obj
-                                      and
-                                      "designator" in obj
-                                  ):
-                                      flights.append(
-                                          obj
-                                      )
-
-                                  for value in obj.values():
-                                      visit(value)
-
-
-                              elif isinstance(
-                                  obj,
-                                  list
-                              ):
-
-                                  for value in obj:
-                                      visit(value)
-
-
-                          visit(response_json)
-
-
-                          log("")
-                          log(
-                              f"Oggetti volo trovati: "
-                              f"{len(flights)}"
-                          )
-
-
-                          if flights:
-
-                              first_flight = flights[0]
-
-                              designator = (
-                                  first_flight.get(
-                                      "designator"
-                                  )
-                                  or {}
-                              )
-
-
-                              log("")
-                              log(
-                                  "PRIMO VOLO TROVATO"
-                              )
-
-                              log("----------------------------------------")
-
-                              log(
-                                  "Origine: "
-                                  f"{designator.get('origin')}"
-                              )
-
-                              log(
-                                  "Destinazione: "
-                                  f"{designator.get('destination')}"
-                              )
-
-                              log(
-                                  "Partenza: "
-                                  f"{designator.get('departure')}"
-                              )
-
-                              log(
-                                  "Arrivo: "
-                                  f"{designator.get('arrival')}"
-                              )
-
-                              log(
-                                  "Durata: "
-                                  f"{first_flight.get('flightDuration')}"
-                              )
-
-
-                          log("")
-                          log(
-                              "TEST VOLOTEA RIUSCITO."
-                          )
-
-                      else:
-
-                          log("")
-                          log(
-                              "ATTENZIONE: HTTP 200 "
-                              "ma risposta non JSON."
-                          )
-
-
-                  elif status == 403:
-
-                      log("")
-                      log(
-                          "========================================"
-                      )
-
-                      log(
-                          "VOLOTEA SEARCH API -> HTTP 403"
-                      )
-
-                      log(
-                          "========================================"
-                      )
-
-                      log("")
-                      log(
-                          "Il server ha rifiutato "
-                          "la richiesta generata "
-                          "dal contesto browser."
-                      )
-
-                      log("")
-                      log(
-                          "Questo test NON blocca "
-                          "il workflow."
-                      )
-
-
-                      # =================================================
-                      # INFORMAZIONI SULLE RICHIESTE INTERCETTATE
-                      # =================================================
-
-                      if captured_requests:
-
-                          log("")
-                          log(
-                              "Richieste API intercettate: "
-                              f"{len(captured_requests)}"
-                          )
-
-                          for item in captured_requests:
-
-                              headers = item["headers"]
-
-                              log("")
-                              log(
-                                  f"URL: {item['url']}"
-                              )
-
-                              log(
-                                  "x-api-key: "
-                                  + (
-                                      "PRESENTE"
-                                      if headers.get(
-                                          "x-api-key"
-                                      )
-                                      else "ASSENTE"
-                                  )
-                              )
-
-                              log(
-                                  "x-client-session: "
-                                  + (
-                                      "PRESENTE"
-                                      if headers.get(
-                                          "x-client-session"
-                                      )
-                                      else "ASSENTE"
-                                  )
-                              )
-
-                              log(
-                                  "x-session-token: "
-                                  + (
-                                      "PRESENTE"
-                                      if headers.get(
-                                          "x-session-token"
-                                      )
-                                      else "ASSENTE"
-                                  )
-                              )
-
-                      else:
-
-                          log("")
-                          log(
-                              "Nessuna richiesta "
-                              "flights/search intercettata."
-                          )
-
-
-                  else:
-
-                      log("")
-                      log(
-                          f"Status HTTP inatteso: "
-                          f"{status}"
-                      )
-
-                      if browser_result.get(
-                          "error"
-                      ):
-                          log(
-                              browser_result[
-                                  "error"
-                              ]
-                          )
-
-
-                  # =================================================
-                  # 7. DIAGNOSTICA RICHIESTE
-                  # =================================================
-
-                  log("")
-                  log("6. DIAGNOSTICA REQUEST")
-                  log("----------------------------------------")
-
-                  if captured_requests:
-
-                      log(
-                          "Richieste API Volotea "
-                          "intercettate:"
-                      )
-
-                      for request_data in (
-                          captured_requests
-                      ):
-
-                          log(
-                              f" - "
-                              f"{request_data['method']} "
-                              f"{request_data['url']}"
-                          )
-
-                  else:
-
-                      log(
-                          "Nessuna richiesta API "
-                          "Volotea intercettata."
-                      )
-
-
-              except Exception as exc:
-
-                  log("")
-                  log(
-                      "ERRORE TEST PLAYWRIGHT VOLOTEA:"
-                  )
-
-                  log(
-                      repr(exc)
-                  )
-
-                  log("")
-                  log(
-                      "Il test Volotea NON "
-                      "blocca il workflow."
-
-                  )
-
-              finally:
-
-                  if browser is not None:
-
-                      try:
-                          browser.close()
-                      except Exception:
-                          pass
-
-
-          log("")
-          log("========================================")
-          log("TEST VOLOTEA COMPLETATO")
-          log("========================================")
-
-          log("")
-          log(
-              "Il test Volotea è diagnostico "
-              "e non blocca Flight Hunter."
+          if [ ! -f "scanners/volotea.py" ]; then
+            echo ""
+            echo "ERRORE: scanners/volotea.py non trovato."
+            echo ""
+            echo "Contenuto della cartella scanners:"
+            find scanners -maxdepth 2 -type f -print
+            exit 1
+          fi
+
+          echo ""
+          echo "Esecuzione:"
+          echo "python -u scanners/volotea.py"
+          echo ""
+
+          python -u scanners/volotea.py
+
+          EXIT_CODE=$?
+
+          echo ""
+          echo "========================================"
+          echo "CODICE USCITA TEST VOLOTEA: $EXIT_CODE"
+          echo "========================================"
+
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            echo ""
+            echo "ATTENZIONE:"
+            echo "Il test Volotea ha restituito un errore."
+            echo "Il workflow viene comunque interrotto."
+            exit "$EXIT_CODE"
+          fi
+
+          echo ""
+          echo "TEST VOLOTEA TERMINATO."
 
 
       # ============================================================
@@ -1110,19 +171,19 @@ jobs:
               --header "Authorization: Bearer ${FH_PUBLISHABLE_KEY}" \
               --header "Content-Type: application/json" \
               --data "$(python - <<'PY'
-          import json
-          import os
+import json
+import os
 
-          print(
-              json.dumps(
-                  {
-                      "email": os.environ["FH_EMAIL"],
-                      "password": os.environ["FH_PASSWORD"],
-                  }
-              )
-          )
-          PY
-          )" \
+print(
+    json.dumps(
+        {
+            "email": os.environ["FH_EMAIL"],
+            "password": os.environ["FH_PASSWORD"],
+        }
+    )
+)
+PY
+)" \
               "$AUTH_URL"
           )
 
@@ -1130,7 +191,6 @@ jobs:
           echo "HTTP status autenticazione: $HTTP_CODE"
 
           if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-
             echo ""
             echo "ERRORE AUTENTICAZIONE"
             echo ""
@@ -1143,42 +203,38 @@ jobs:
             exit 1
           fi
 
-
           ACCESS_TOKEN=$(
             python - "$RESPONSE_FILE" <<'PY'
-          import json
-          import sys
+import json
+import sys
 
-          filename = sys.argv[1]
+filename = sys.argv[1]
 
-          with open(
-              filename,
-              "r",
-              encoding="utf-8"
-          ) as f:
-              data = json.load(f)
+with open(
+    filename,
+    "r",
+    encoding="utf-8"
+) as f:
+    data = json.load(f)
 
-          token = data.get("access_token")
+token = data.get("access_token")
 
-          if not token:
-              raise SystemExit(
-                  "access_token non presente "
-                  "nella risposta di autenticazione"
-              )
+if not token:
+    raise SystemExit(
+        "access_token non presente "
+        "nella risposta di autenticazione"
+    )
 
-          print(token)
-          PY
+print(token)
+PY
           )
 
-
           rm -f "$RESPONSE_FILE"
-
 
           if [ -z "$ACCESS_TOKEN" ]; then
             echo "ERRORE: token vuoto."
             exit 1
           fi
-
 
           echo ""
           echo "Autenticazione completata."
@@ -1186,8 +242,7 @@ jobs:
 
           echo "::add-mask::$ACCESS_TOKEN"
 
-          echo "FH_ACCESS_TOKEN=$ACCESS_TOKEN" \
-            >> "$GITHUB_ENV"
+          echo "FH_ACCESS_TOKEN=$ACCESS_TOKEN" >> "$GITHUB_ENV"
 
 
       # ============================================================
@@ -1225,7 +280,6 @@ jobs:
           echo "========================================"
 
           if [ "$EXIT_CODE" -ne 0 ]; then
-
             echo ""
             echo "========================================"
             echo "ERRORE FLIGHT HUNTER"
