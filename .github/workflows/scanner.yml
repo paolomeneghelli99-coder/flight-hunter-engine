@@ -21,21 +21,33 @@ jobs:
       FH_PASSWORD: ${{ secrets.FH_PASSWORD }}
 
     steps:
+
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          set -e
 
-      - name: Check repository structure
+          echo "========================================"
+          echo "INSTALLAZIONE DIPENDENZE"
+          echo "========================================"
+
+          python --version
+          python -m pip --version
+
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Check repository
         run: |
+          set -e
+
           echo "========================================"
           echo "STRUTTURA REPOSITORY"
           echo "========================================"
@@ -45,61 +57,95 @@ jobs:
             | sort
 
           echo ""
-          echo "Verifica main.py..."
+          echo "Controllo main.py..."
 
-          if [ -f main.py ]; then
-            echo "OK: main.py trovato"
-          else
-            echo "ERRORE: main.py non trovato"
-            exit 1
-          fi
+          test -f main.py
+          echo "OK: main.py presente"
 
           echo ""
-          echo "Verifica cartella scanners..."
+          echo "Controllo scanners..."
 
-          if [ -d scanners ]; then
-            echo "OK: cartella scanners trovata"
-            find scanners -maxdepth 2 -type f | sort
-          else
-            echo "ERRORE: cartella scanners non trovata"
-            exit 1
-          fi
+          test -d scanners
+          echo "OK: cartella scanners presente"
+
+          find scanners -maxdepth 2 -type f | sort
 
       - name: Check required secrets
         run: |
+          set -e
+
           echo "========================================"
-          echo "VERIFICA CONFIGURAZIONE"
+          echo "VERIFICA SECRET"
           echo "========================================"
 
           if [ -z "$FH_BACKEND_URL" ]; then
-            echo "ERRORE: FH_BACKEND_URL non configurato"
+            echo "ERRORE: FH_BACKEND_URL mancante"
             exit 1
+          else
+            echo "OK: FH_BACKEND_URL presente"
           fi
 
           if [ -z "$FH_PUBLISHABLE_KEY" ]; then
-            echo "ERRORE: FH_PUBLISHABLE_KEY non configurato"
+            echo "ERRORE: FH_PUBLISHABLE_KEY mancante"
             exit 1
+          else
+            echo "OK: FH_PUBLISHABLE_KEY presente"
           fi
 
           if [ -z "$FH_EMAIL" ]; then
-            echo "ERRORE: FH_EMAIL non configurato"
+            echo "ERRORE: FH_EMAIL mancante"
             exit 1
+          else
+            echo "OK: FH_EMAIL presente"
           fi
 
           if [ -z "$FH_PASSWORD" ]; then
-            echo "ERRORE: FH_PASSWORD non configurato"
+            echo "ERRORE: FH_PASSWORD mancante"
             exit 1
+          else
+            echo "OK: FH_PASSWORD presente"
           fi
 
-          echo "OK: tutti i secret richiesti sono presenti"
-
-      - name: Run Flight Hunter
+      - name: Run Flight Hunter Scanner
+        shell: bash
         run: |
+          set -o pipefail
+
           echo "========================================"
           echo "AVVIO FLIGHT HUNTER"
           echo "========================================"
 
-          python main.py
+          echo ""
+          echo "Esecuzione:"
+          echo "python -u main.py"
+          echo ""
+
+          python -u main.py 2>&1 | tee flight_hunter.log
+
+          EXIT_CODE=${PIPESTATUS[0]}
+
+          echo ""
+          echo "========================================"
+          echo "CODICE USCITA MAIN.PY: $EXIT_CODE"
+          echo "========================================"
+
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            echo ""
+            echo "========================================"
+            echo "ERRORE COMPLETO FLIGHT HUNTER"
+            echo "========================================"
+            cat flight_hunter.log
+            echo "========================================"
+            exit "$EXIT_CODE"
+          fi
+
+      - name: Upload scanner log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flight-hunter-log
+          path: flight_hunter.log
+          if-no-files-found: ignore
 
       - name: Scanner completed
         if: success()
@@ -112,6 +158,6 @@ jobs:
         if: failure()
         run: |
           echo "========================================"
-          echo "ERRORE: FLIGHT HUNTER FALLITO"
+          echo "FLIGHT HUNTER FALLITO"
           echo "========================================"
-          exit 1
+          echo "Controlla il log del passaggio 'Run Flight Hunter Scanner'."
