@@ -2,7 +2,6 @@ name: Flight Hunter Scanner
 
 on:
   workflow_dispatch:
-
   schedule:
     - cron: "0 */6 * * *"
 
@@ -31,6 +30,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
+        shell: bash
         run: |
           set -e
 
@@ -52,6 +52,7 @@ jobs:
           echo "Dipendenze installate correttamente."
 
       - name: Check repository
+        shell: bash
         run: |
           set -e
 
@@ -78,6 +79,7 @@ jobs:
           find scanners -maxdepth 2 -type f | sort
 
       - name: Check required secrets
+        shell: bash
         run: |
           set -e
 
@@ -255,12 +257,16 @@ jobs:
           if remaining <= 0:
               print("")
               print("ERRORE: JWT GIÀ SCADUTO")
+              print("Il token ottenuto da Supabase non è utilizzabile.")
               raise SystemExit(1)
 
           if remaining < 60:
               print("")
               print(
                   "ERRORE: JWT scade tra meno di 60 secondi."
+              )
+              print(
+                  "Non è sufficientemente sicuro per eseguire lo scanner."
               )
               raise SystemExit(1)
 
@@ -269,6 +275,7 @@ jobs:
           PY
 
       - name: Verify access token
+        shell: bash
         run: |
           set -e
 
@@ -284,83 +291,147 @@ jobs:
           echo "OK: FH_ACCESS_TOKEN disponibile"
           echo "Il valore del token non verrà mostrato."
 
-      - name: Test Volotea booking engine
+      - name: Test Volotea stations
         shell: bash
         run: |
           set -e
 
           echo "========================================"
-          echo "TEST VOLOTEA BOOKING ENGINE"
+          echo "TEST VOLOTEA STATIONS"
           echo "========================================"
 
           python - <<'PY'
-          from playwright.sync_api import sync_playwright
+          import json
+          import requests
 
-          URL = "https://book.volotea.com/booking/flights"
+          URL = "https://json.volotea.com/dist/stations/stations.json"
 
-          with sync_playwright() as p:
-              browser = p.chromium.launch(
-                  headless=True
-              )
+          print("")
+          print("Download:")
+          print(URL)
+          print("")
 
-              page = browser.new_page(
-                  locale="it-IT",
-                  viewport={
-                      "width": 1440,
-                      "height": 1000
-                  }
-              )
+          response = requests.get(
+              URL,
+              timeout=60,
+              headers={
+                  "User-Agent": "Mozilla/5.0",
+                  "Accept": "application/json",
+              },
+          )
 
-              print("Apertura booking engine Volotea...")
+          print("HTTP status:", response.status_code)
+          print(
+              "Content-Type:",
+              response.headers.get("content-type")
+          )
+          print(
+              "Dimensione:",
+              len(response.content),
+              "bytes"
+          )
 
-              response = page.goto(
-                  URL,
-                  wait_until="domcontentloaded",
-                  timeout=60000
-              )
+          response.raise_for_status()
 
-              print("")
-              print("HTTP status:")
+          data = response.json()
+
+          print("")
+          print(
+              "Tipo JSON:",
+              type(data).__name__
+          )
+
+          if isinstance(data, dict):
+
               print(
-                  response.status
-                  if response
-                  else "NESSUNA RISPOSTA"
+                  "Numero elementi principali:",
+                  len(data)
               )
 
               print("")
-              print("URL finale:")
-              print(page.url)
+              print("Prime 10 chiavi:")
+
+              for key in list(data.keys())[:10]:
+                  print(" -", key)
 
               print("")
-              print("Titolo:")
-              print(page.title())
+              print("Ricerca VRN...")
 
-              page.wait_for_timeout(10000)
+              vrn = data.get("VRN")
 
-              print("")
-              print("URL dopo caricamento:")
-              print(page.url)
+              if vrn is None:
 
-              print("")
-              print("Titolo dopo caricamento:")
-              print(page.title())
+                  print(
+                      "VRN non trovato come chiave principale."
+                  )
 
-              print("")
-              print("Numero elementi input:")
+                  for key, value in data.items():
+
+                      if isinstance(value, dict):
+
+                          if (
+                              value.get("iata") == "VRN"
+                              or value.get("code") == "VRN"
+                          ):
+
+                              vrn = value
+
+                              print(
+                                  "VRN trovato sotto la chiave:",
+                                  key
+                              )
+
+                              break
+
+              if vrn is not None:
+
+                  print("")
+                  print("STRUTTURA VRN:")
+
+                  print(
+                      json.dumps(
+                          vrn,
+                          indent=2,
+                          ensure_ascii=False
+                      )[:10000]
+                  )
+
+              else:
+
+                  print(
+                      "ATTENZIONE: VRN non trovato."
+                  )
+
+          elif isinstance(data, list):
+
               print(
-                  page.locator("input").count()
+                  "Numero elementi:",
+                  len(data)
               )
 
-              print("")
-              print("Numero elementi button:")
+              if data:
+
+                  print("")
+                  print("Primo elemento:")
+
+                  print(
+                      json.dumps(
+                          data[0],
+                          indent=2,
+                          ensure_ascii=False
+                      )[:5000]
+                  )
+
+          else:
+
               print(
-                  page.locator("button").count()
+                  "Struttura JSON inattesa."
               )
 
-              print("")
-              print("Test booking engine completato.")
-
-              browser.close()
+          print("")
+          print("========================================")
+          print("TEST COMPLETATO")
+          print("========================================")
           PY
 
       - name: Run Flight Hunter Scanner
@@ -387,6 +458,7 @@ jobs:
           echo "========================================"
 
           if [ "$EXIT_CODE" -ne 0 ]; then
+
             echo ""
             echo "========================================"
             echo "ERRORE FLIGHT HUNTER"
@@ -397,6 +469,7 @@ jobs:
             echo "========================================"
 
             exit "$EXIT_CODE"
+
           fi
 
       - name: Upload scanner log
