@@ -32,30 +32,44 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          fi
+          pip install -r requirements.txt
 
-      - name: Check scanner files
+      - name: Check repository structure
         run: |
-          echo "Contenuto repository:"
-          find . -maxdepth 3 -type f | sort
+          echo "========================================"
+          echo "STRUTTURA REPOSITORY"
+          echo "========================================"
+
+          find . -maxdepth 3 -type f \
+            ! -path "./.git/*" \
+            | sort
 
           echo ""
-          echo "Verifica scanner.py..."
+          echo "Verifica main.py..."
 
-          if [ -f scanner.py ]; then
-            echo "OK: scanner.py trovato nella root"
-          elif [ -f scripts/scanner.py ]; then
-            echo "OK: scripts/scanner.py trovato"
+          if [ -f main.py ]; then
+            echo "OK: main.py trovato"
           else
-            echo "ERRORE: scanner.py non trovato"
+            echo "ERRORE: main.py non trovato"
+            exit 1
+          fi
+
+          echo ""
+          echo "Verifica cartella scanners..."
+
+          if [ -d scanners ]; then
+            echo "OK: cartella scanners trovata"
+            find scanners -maxdepth 2 -type f | sort
+          else
+            echo "ERRORE: cartella scanners non trovata"
             exit 1
           fi
 
       - name: Check required secrets
         run: |
-          echo "Controllo configurazione..."
+          echo "========================================"
+          echo "VERIFICA CONFIGURAZIONE"
+          echo "========================================"
 
           if [ -z "$FH_BACKEND_URL" ]; then
             echo "ERRORE: FH_BACKEND_URL non configurato"
@@ -77,34 +91,27 @@ jobs:
             exit 1
           fi
 
-          echo "OK: tutti i secret sono presenti"
+          echo "OK: tutti i secret richiesti sono presenti"
 
-      - name: Run Flight Hunter Scanner
+      - name: Run Flight Hunter
         run: |
           echo "========================================"
-          echo "Avvio scanner Flight Hunter..."
+          echo "AVVIO FLIGHT HUNTER"
           echo "========================================"
 
-          if [ -f scanner.py ]; then
-            python scanner.py
-          elif [ -f scripts/scanner.py ]; then
-            python scripts/scanner.py
-          else
-            echo "ERRORE: impossibile trovare scanner.py"
-            exit 1
-          fi
+          python main.py
 
       - name: Scanner completed
         if: success()
         run: |
           echo "========================================"
-          echo "Flight Hunter Scanner completato"
+          echo "FLIGHT HUNTER COMPLETATO CON SUCCESSO"
           echo "========================================"
 
       - name: Scanner failed
         if: failure()
         run: |
           echo "========================================"
-          echo "ERRORE: Flight Hunter Scanner fallito"
+          echo "ERRORE: FLIGHT HUNTER FALLITO"
           echo "========================================"
           exit 1
