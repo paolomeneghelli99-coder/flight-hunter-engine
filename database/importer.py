@@ -7,7 +7,6 @@ import requests
 
 from config.settings import settings
 
-
 MAX_PER_RICHIESTA = 500
 
 
@@ -22,59 +21,20 @@ def _invia(blocco: list) -> int:
         "offerte": blocco,
     }
 
-    headers = {
-        "Authorization": f"Bearer {settings.access_token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-
-    try:
-        risposta = requests.post(
-            settings.import_url,
-            headers=headers,
-            data=json.dumps(payload),
-            timeout=settings.timeout,
-        )
-    except requests.RequestException as exc:
-        print(
-            f"Errore di connessione all'API di import: {exc}",
-            file=sys.stderr,
-        )
-        return 0
-
-    print(
-        f"Import API HTTP status: {risposta.status_code}"
+    risposta = requests.post(
+        settings.import_url,
+        headers={
+            "Authorization": f"Bearer {settings.access_token}",
+            "Content-Type": "application/json",
+        },
+        data=json.dumps(payload),
+        timeout=settings.timeout,
     )
 
     if risposta.status_code == 401:
-        print(
-            "IMPORT API: HTTP 401 Unauthorized",
-            file=sys.stderr,
-        )
-
-        print(
-            "Risposta API:",
-            risposta.text,
-            file=sys.stderr,
-        )
-
-        print(
-            "Content-Type risposta:",
-            risposta.headers.get("content-type", "MANCANTE"),
-            file=sys.stderr,
-        )
-
-        print(
-            "WWW-Authenticate:",
-            risposta.headers.get(
-                "www-authenticate",
-                "MANCANTE",
-            ),
-            file=sys.stderr,
-        )
-
         raise SystemExit(
-            "L'API di importazione ha rifiutato il JWT con HTTP 401."
+            "Token non valido o scaduto (401): "
+            "verifica l'autenticazione del backend."
         )
 
     if risposta.status_code == 400:
@@ -86,21 +46,12 @@ def _invia(blocco: list) -> int:
 
     if risposta.status_code >= 400:
         print(
-            f"Errore HTTP {risposta.status_code}: "
-            f"{risposta.text}",
+            f"Errore {risposta.status_code}: {risposta.text}",
             file=sys.stderr,
         )
         return 0
 
-    try:
-        dati = risposta.json()
-    except ValueError:
-        print(
-            "Risposta API non JSON:",
-            risposta.text,
-            file=sys.stderr,
-        )
-        return 0
+    dati = risposta.json()
 
     return int(dati.get("importate", 0))
 
@@ -120,8 +71,8 @@ def import_offers(offerte: list) -> int:
         importate = _invia(blocco)
 
         print(
-            f"Inviate {len(blocco)} offerte "
-            f"-> importate {importate}"
+            f"Inviate {len(blocco)} offerte -> "
+            f"importate {importate}"
         )
 
         totale += importate
