@@ -24,10 +24,88 @@ jobs:
           pip install requests python-dotenv playwright
           python -m playwright install --with-deps chromium
 
+      - name: Obtain Flight Hunter JWT
+        env:
+          FH_BACKEND_URL: ${{ secrets.FH_BACKEND_URL }}
+          FH_PUBLISHABLE_KEY: ${{ secrets.FH_PUBLISHABLE_KEY }}
+          FH_EMAIL: ${{ secrets.FH_EMAIL }}
+          FH_PASSWORD: ${{ secrets.FH_PASSWORD }}
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          import requests
+
+          backend_url = os.environ["FH_BACKEND_URL"].rstrip("/")
+          publishable_key = os.environ["FH_PUBLISHABLE_KEY"]
+          email = os.environ["FH_EMAIL"]
+          password = os.environ["FH_PASSWORD"]
+
+          url = (
+              f"{backend_url}/auth/v1/token"
+              "?grant_type=password"
+          )
+
+          headers = {
+              "apikey": publishable_key,
+              "Content-Type": "application/json",
+          }
+
+          payload = {
+              "email": email,
+              "password": password,
+          }
+
+          print("Autenticazione Flight Hunter in corso...")
+
+          response = requests.post(
+              url,
+              headers=headers,
+              json=payload,
+              timeout=30,
+          )
+
+          print(
+              f"HTTP status autenticazione: "
+              f"{response.status_code}"
+          )
+
+          if response.status_code != 200:
+              print(
+                  "Errore autenticazione:"
+              )
+              print(response.text[:1000])
+              sys.exit(1)
+
+          data = response.json()
+
+          access_token = data.get("access_token")
+
+          if not access_token:
+              print(
+                  "Errore: access_token non presente "
+                  "nella risposta Supabase."
+              )
+              sys.exit(1)
+
+          with open(
+              os.environ["GITHUB_ENV"],
+              "a",
+              encoding="utf-8",
+          ) as env_file:
+              env_file.write(
+                  f"FH_ACCESS_TOKEN={access_token}\n"
+              )
+
+          print("FH_ACCESS_TOKEN ottenuto correttamente.")
+          PY
+
       - name: Run Flight Hunter scanner
         env:
           FH_BACKEND_URL: ${{ secrets.FH_BACKEND_URL }}
           FH_API_KEY: ${{ secrets.FH_API_KEY }}
+          FH_ACCESS_TOKEN: ${{ env.FH_ACCESS_TOKEN }}
+          FH_IMPORT_URL: ${{ secrets.FH_IMPORT_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           VOLOTEA_API_KEY: ${{ secrets.VOLOTEA_API_KEY }}
