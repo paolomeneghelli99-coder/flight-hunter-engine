@@ -1,116 +1,116 @@
 name: Flight Hunter Scanner
 
 on:
-  workflow_dispatch:
-  schedule:
-    - cron: "0 */6 * * *"
+workflow_dispatch:
+schedule:
+- cron: "0 */6 * * *"
 
 concurrency:
-  group: flight-hunter-scanner
-  cancel-in-progress: false
+group: flight-hunter-scanner
+cancel-in-progress: false
 
 jobs:
-  scan:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+scan:
+runs-on: ubuntu-latest
+timeout-minutes: 30
 
-    steps:
+```
+steps:
 
-      - name: Checkout repository
-        uses: actions/checkout@v5
+  - name: Checkout repository
+    uses: actions/checkout@v5
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
+  - name: Setup Python
+    uses: actions/setup-python@v6
+    with:
+      python-version: "3.12"
+      cache: pip
 
-      - name: Installazione dipendenze
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+  - name: Installazione dipendenze
+    run: |
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
 
-      - name: Login Flight Hunter
-        env:
-          FH_BACKEND_URL: ${{ secrets.FH_BACKEND_URL }}
-          FH_PUBLISHABLE_KEY: ${{ secrets.FH_PUBLISHABLE_KEY }}
-          FH_EMAIL: ${{ secrets.FH_EMAIL }}
-          FH_PASSWORD: ${{ secrets.FH_PASSWORD }}
-        run: |
-          set -euo pipefail
+  - name: Login Flight Hunter
+    env:
+      FH_BACKEND_URL: ${{ secrets.FH_BACKEND_URL }}
+      FH_PUBLISHABLE_KEY: ${{ secrets.FH_PUBLISHABLE_KEY }}
+      FH_EMAIL: ${{ secrets.FH_EMAIL }}
+      FH_PASSWORD: ${{ secrets.FH_PASSWORD }}
+    run: |
+      set -euo pipefail
 
-          RESPONSE=$(curl -sS -X POST \
-            "${FH_BACKEND_URL}/auth/v1/token?grant_type=password" \
-            -H "apikey: ${FH_PUBLISHABLE_KEY}" \
-            -H "Content-Type: application/json" \
-            -d "$(jq -n \
-              --arg email "$FH_EMAIL" \
-              --arg password "$FH_PASSWORD" \
-              '{email:$email,password:$password}')")
+      RESPONSE=$(curl -sS -X POST \
+        "${FH_BACKEND_URL}/auth/v1/token?grant_type=password" \
+        -H "apikey: ${FH_PUBLISHABLE_KEY}" \
+        -H "Content-Type: application/json" \
+        -d "$(jq -n \
+          --arg email "$FH_EMAIL" \
+          --arg password "$FH_PASSWORD" \
+          '{email:$email,password:$password}')")
 
-          TOKEN=$(echo "$RESPONSE" | jq -r '.access_token // empty')
+      TOKEN=$(echo "$RESPONSE" | jq -r '.access_token // empty')
 
-          if [ -z "$TOKEN" ]; then
-            echo "Login fallito:"
-            echo "$RESPONSE"
-            exit 1
-          fi
+      if [ -z "$TOKEN" ]; then
+        echo "Login fallito:"
+        echo "$RESPONSE"
+        exit 1
+      fi
 
-          echo "::add-mask::$TOKEN"
-          echo "FH_ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+      echo "::add-mask::$TOKEN"
+      echo "FH_ACCESS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
 
-          echo "Token ottenuto correttamente"
+      echo "Token ottenuto correttamente"
 
-      - name: Test ricerca ritorno Ryanair
-        run: |
-          python - <<'PY'
-          from connectors.base import BaseConnector
+  - name: Test ricerca ritorno Ryanair
+    run: |
+      python - <<'PY'
+      from connectors.base import BaseConnector
 
-          print("===== TEST RITORNO RYANAIR =====")
+      print("===== TEST RITORNO RYANAIR =====")
 
-          c = BaseConnector("test-ryanair")
+      c = BaseConnector("test-ryanair")
 
-          risposta = c.get_json(
-              "https://services-api.ryanair.com/farfnd/v4/oneWayFares",
-              params={
-                  "departureAirportIataCode": "BRI",
-                  "outboundDepartureDateFrom": "2026-09-19",
-                  "outboundDepartureDateTo": "2026-10-02",
-                  "currency": "EUR",
-                  "limit": 10,
-                  "offset": 0,
-                  "market": "it-it",
-              }
-          )
+      risposta = c.get_json(
+          "https://services-api.ryanair.com/farfnd/v4/oneWayFares",
+          params={
+              "departureAirportIataCode": "BRI",
+              "outboundDepartureDateFrom": "2026-09-19",
+              "outboundDepartureDateTo": "2026-10-02",
+              "currency": "EUR",
+              "limit": 10,
+              "offset": 0,
+              "market": "it-it",
+          }
+      )
 
-          if not risposta:
-              print("NESSUNA RISPOSTA")
-          else:
-              print("Chiavi risposta:")
-              print(risposta.keys())
+      if not risposta:
+          print("NESSUNA RISPOSTA")
+      else:
+          print("Chiavi risposta:")
+          print(risposta.keys())
 
-              fares = risposta.get("fares", [])
+          fares = risposta.get("fares", [])
 
-              print("Numero voli trovati:", len(fares))
+          print("Numero voli trovati:", len(fares))
 
-              if fares:
-                  print("Primo risultato:")
-                  print(fares[0])
+          if fares:
+              print("Primo risultato:")
+              print(fares[0])
 
-          c.close()
+      c.close()
 
-          print("===== FINE TEST =====")
-          PY
+      print("===== FINE TEST =====")
+      PY
 
-      - name: Avvio Flight Hunter Engine
-        env:
-          FH_ACCESS_TOKEN: ${{ env.FH_ACCESS_TOKEN }}
-          FH_IMPORT_URL: https://flight-hunter.lovable.app/api/public/offers/import
-          FH_CONNECTOR: ryanair
-          FH_FONTE_DATO: scanner
-          FH_PREZZO_MAX: "80"
-          FH_GIORNI_MAX: "120"
-        run: |
-          echo "Avvio scanner Flight Hunter..."
-          python main.py
-          echo "Scanner terminato"
+  - name: Avvio Flight Hunter Engine
+    env:
+      FH_IMPORT_URL: https://flight-hunter.lovable.app/api/public/offers/import
+      FH_CONNECTOR: ryanair
+      FH_FONTE_DATO: scanner
+      FH_PREZZO_MAX: "80"
+      FH_GIORNI_MAX: "120"
+    run: |
+      echo "Avvio scanner Flight Hunter..."
+      python main.py
+      echo "Scanner terminato"
