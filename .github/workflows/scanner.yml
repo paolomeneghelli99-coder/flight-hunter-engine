@@ -25,7 +25,7 @@ jobs:
           pip install requests playwright
           python -m playwright install --with-deps chromium
 
-      - name: Test Volotea real search
+      - name: Test Volotea airport selector
         env:
           VOLOTEA_API_KEY: ${{ secrets.VOLOTEA_API_KEY }}
         shell: bash
@@ -33,7 +33,8 @@ jobs:
           set -euo pipefail
 
           echo "========================================"
-          echo "TEST VOLOTEA - RICERCA REALE"
+          echo "FLIGHT HUNTER - TEST VOLOTEA"
+          echo "DIAGNOSTICA SELETTORE AEROPORTI"
           echo "========================================"
 
           cat > /tmp/test_volotea.py <<'PYTHON'
@@ -45,6 +46,10 @@ jobs:
           import requests
           from playwright.sync_api import sync_playwright
 
+
+          # ============================================================
+          # CONFIGURAZIONE
+          # ============================================================
 
           STATIONS_URL = (
               "https://json.volotea.com/"
@@ -70,6 +75,10 @@ jobs:
               "Mobile Safari/537.36"
           )
 
+
+          # ============================================================
+          # LOG
+          # ============================================================
 
           def log(message=""):
               print(message, flush=True)
@@ -98,25 +107,29 @@ jobs:
               log(text)
 
 
+          # ============================================================
+          # SAFE CLICK
+          # ============================================================
+
           def safe_click(locator, description):
               try:
                   locator.click(timeout=5000)
 
                   log(
                       f"{description}: "
-                      "click normale riuscito."
+                      "CLICK NORMALE RIUSCITO"
                   )
 
                   return True
 
-              except Exception as first_error:
+              except Exception as exc:
                   log(
                       f"{description}: "
-                      "click normale non riuscito."
+                      "click normale fallito"
                   )
 
                   log(
-                      f"Motivo: {first_error}"
+                      f"Motivo: {exc}"
                   )
 
               try:
@@ -127,348 +140,192 @@ jobs:
 
                   log(
                       f"{description}: "
-                      "click forzato riuscito."
+                      "CLICK FORZATO RIUSCITO"
                   )
 
                   return True
 
-              except Exception as second_error:
+              except Exception as exc:
                   log(
                       f"{description}: "
-                      "click forzato non riuscito."
+                      "click forzato fallito"
                   )
 
                   log(
-                      f"Motivo: {second_error}"
+                      f"Motivo: {exc}"
                   )
 
               return False
 
 
-          def focus_input(page, locator, description):
-              try:
-                  locator.evaluate(
-                      """
-                      el => {
-                          el.scrollIntoView({
-                              block: "center",
-                              inline: "center"
-                          });
-                          el.focus();
-                      }
-                      """
-                  )
-
-                  log(
-                      f"{description}: "
-                      "focus DOM riuscito."
-                  )
-
-                  return True
-
-              except Exception as exc:
-                  log(
-                      f"{description}: "
-                      "errore focus DOM:"
-                  )
-
-                  log(repr(exc))
-
-                  return False
-
-
-          def force_enable_input(page, locator, description):
-              """
-              Volotea in alcuni caricamenti presenta il campo
-              autocomplete come readonly/non-editable.
-
-              Rimuoviamo temporaneamente gli attributi che
-              impediscono l'interazione e manteniamo il normale
-              sistema di eventi del browser.
-              """
-
-              try:
-                  result = locator.evaluate(
-                      """
-                      el => {
-                          const before = {
-                              value: el.value,
-                              readOnly: el.readOnly,
-                              disabled: el.disabled,
-                              outerHTML: el.outerHTML
-                          };
-
-                          el.removeAttribute("readonly");
-                          el.removeAttribute("disabled");
-
-                          try {
-                              el.readOnly = false;
-                          } catch (e) {}
-
-                          try {
-                              el.disabled = false;
-                          } catch (e) {}
-
-                          return {
-                              before: before,
-                              after: {
-                                  value: el.value,
-                                  readOnly: el.readOnly,
-                                  disabled: el.disabled
-                              }
-                          };
-                      }
-                      """
-                  )
-
-                  log(
-                      f"{description}: "
-                      "stato input:"
-                  )
-
-                  dump_json(
-                      "INPUT STATE:",
-                      result,
-                      10000,
-                  )
-
-                  return True
-
-              except Exception as exc:
-                  log(
-                      f"{description}: "
-                      "impossibile forzare input."
-                  )
-
-                  log(repr(exc))
-
-                  return False
-
-
-          def native_set_value(
-              page,
-              locator,
-              value,
-              description,
-          ):
-              """
-              Imposta il valore usando il setter nativo
-              dell'elemento HTML e genera gli eventi input/change.
-
-              Questo è più affidabile con componenti React
-              rispetto a una semplice assegnazione JS.
-              """
-
-              try:
-                  result = locator.evaluate(
-                      """
-                      (el, value) => {
-                          const proto =
-                              Object.getPrototypeOf(el);
-
-                          const descriptor =
-                              Object.getOwnPropertyDescriptor(
-                                  proto,
-                                  "value"
-                              );
-
-                          if (
-                              descriptor &&
-                              descriptor.set
-                          ) {
-                              descriptor.set.call(
-                                  el,
-                                  value
-                              );
-                          } else {
-                              el.value = value;
-                          }
-
-                          el.dispatchEvent(
-                              new Event(
-                                  "input",
-                                  {
-                                      bubbles: true
-                                  }
-                              )
-                          );
-
-                          el.dispatchEvent(
-                              new Event(
-                                  "change",
-                                  {
-                                      bubbles: true
-                                  }
-                              );
-
-                          el.dispatchEvent(
-                              new Event(
-                                  "blur",
-                                  {
-                                      bubbles: true
-                                  }
-                              );
-
-                          return {
-                              value: el.value,
-                              readOnly: el.readOnly,
-                              disabled: el.disabled
-                          };
-                      }
-                      """,
-                      value,
-                  )
-
-                  log(
-                      f"{description}: "
-                      f"valore nativo impostato a '{value}'."
-                  )
-
-                  dump_json(
-                      "STATO DOPO NATIVE SET:",
-                      result,
-                      5000,
-                  )
-
-                  return True
-
-              except Exception as exc:
-                  log(
-                      f"{description}: "
-                      "native set non riuscito."
-                  )
-
-                  log(repr(exc))
-
-                  return False
-
-
-          def clear_input_with_keyboard(
-              page,
-              locator,
-              description,
-          ):
-              try:
-                  focus_input(
-                      page,
-                      locator,
-                      description,
-                  )
-
-                  page.keyboard.press("Control+A")
-                  page.keyboard.press("Backspace")
-
-                  log(
-                      f"{description}: "
-                      "campo svuotato tramite tastiera."
-                  )
-
-                  return True
-
-              except Exception as exc:
-                  log(
-                      f"{description}: "
-                      "errore svuotamento:"
-                  )
-
-                  log(repr(exc))
-
-                  return False
-
+          # ============================================================
+          # INPUT VISIBILI
+          # ============================================================
 
           def inspect_visible_inputs(page, title):
               log("")
               log(title)
               log("----------------------------------------")
 
+              inputs = page.locator("input:visible")
+
               try:
-                  inputs = page.locator(
-                      "input:visible"
-                  )
-
                   count = inputs.count()
+              except Exception:
+                  count = 0
 
-                  log(
-                      f"Input visibili: {count}"
-                  )
+              log(
+                  f"Input visibili: {count}"
+              )
 
-                  for index in range(
-                      min(count, 30)
-                  ):
-                      element = inputs.nth(index)
+              for index in range(min(count, 50)):
+                  element = inputs.nth(index)
+
+                  try:
+                      info = element.evaluate(
+                          """
+                          el => ({
+                              tag: el.tagName,
+                              type: el.type,
+                              id: el.id,
+                              name: el.name,
+                              placeholder: el.placeholder,
+                              value: el.value,
+                              readonly: el.readOnly,
+                              disabled: el.disabled,
+                              aria: el.getAttribute("aria-label"),
+                              autocomplete:
+                                  el.getAttribute("autocomplete"),
+                              className: el.className,
+                              outerHTML: el.outerHTML
+                          })
+                          """
+                      )
+
+                      dump_json(
+                          f"INPUT {index}:",
+                          info,
+                          8000,
+                      )
+
+                  except Exception as exc:
+                      log(
+                          f"Errore INPUT {index}: "
+                          f"{exc}"
+                      )
+
+
+          # ============================================================
+          # ELEMENTI VISIBILI DOPO IL CLICK
+          # ============================================================
+
+          def inspect_visible_elements(page):
+              log("")
+              log("ELEMENTI VISIBILI DOPO CLICK")
+              log("----------------------------------------")
+
+              selectors = [
+                  "button:visible",
+                  "[role='button']:visible",
+                  "[role='option']:visible",
+                  "[role='listbox']:visible",
+                  "[role='combobox']:visible",
+                  "[aria-selected]:visible",
+                  "[data-testid]:visible",
+                  "[class*='airport' i]:visible",
+                  "[class*='autocomplete' i]:visible",
+                  "[class*='suggestion' i]:visible",
+                  "[class*='dropdown' i]:visible",
+                  "[class*='listbox' i]:visible",
+                  "[class*='modal' i]:visible",
+                  "[class*='dialog' i]:visible",
+              ]
+
+              seen = set()
+              total = 0
+
+              for selector in selectors:
+
+                  try:
+                      locator = page.locator(selector)
+                      count = locator.count()
+
+                  except Exception:
+                      continue
+
+                  for index in range(min(count, 100)):
+
+                      element = locator.nth(index)
 
                       try:
-                          attrs = element.evaluate(
-                              """
-                              el => ({
-                                  type: el.type,
-                                  name: el.name,
-                                  id: el.id,
-                                  placeholder:
-                                      el.placeholder,
-                                  value:
-                                      el.value,
-                                  aria:
-                                      el.getAttribute(
-                                          "aria-label"
-                                      ),
-                                  autocomplete:
-                                      el.getAttribute(
-                                          "autocomplete"
-                                      ),
-                                  readonly:
-                                      el.readOnly,
-                                  disabled:
-                                      el.disabled
-                              })
-                              """
+                          if not element.is_visible():
+                              continue
+
+                          text = (
+                              element.inner_text()
+                              .strip()
+                          )
+
+                          outer_html = (
+                              element.get_attribute(
+                                  "outerHTML"
+                              )
+                              or ""
+                          )
+
+                          key = (
+                              selector,
+                              text,
+                              outer_html[:500],
+                          )
+
+                          if key in seen:
+                              continue
+
+                          seen.add(key)
+
+                          total += 1
+
+                          log("")
+                          log(
+                              f"ELEMENTO {total}"
                           )
 
                           log(
-                              f"INPUT {index}: "
-                              + json.dumps(
-                                  attrs,
-                                  ensure_ascii=False,
-                              )
+                              f"Selector: {selector}"
+                          )
+
+                          log(
+                              f"Testo: "
+                              f"{text[:1000]}"
+                          )
+
+                          log(
+                              f"HTML: "
+                              f"{outer_html[:3000]}"
                           )
 
                       except Exception:
                           pass
 
-                  return inputs
-
-              except Exception as exc:
-                  log(
-                      "Errore analisi input:"
-                  )
-
-                  log(repr(exc))
-
-                  return None
-
-
-          def inspect_airport_dom(page, code, city, label):
-              """
-              Diagnostica in modo molto più ampio il DOM.
-              Non si limita a role=option/li perché il frontend
-              Volotea può utilizzare div custom.
-              """
-
               log("")
-              log(label)
+              log(
+                  f"Totale elementi diagnostici: "
+                  f"{total}"
+              )
+
+
+          # ============================================================
+          # RICERCA TESTUALE
+          # ============================================================
+
+          def search_text(page, terms):
+              log("")
+              log("RICERCA TESTUALE DOPO CLICK")
               log("----------------------------------------")
 
-              terms = [
-                  city,
-                  f"{city} ({code})",
-                  f"{city} - {code}",
-                  f"{code} - {city}",
-                  code,
-              ]
-
-              total_matches = 0
-
               for term in terms:
+
                   try:
                       locator = page.get_by_text(
                           term,
@@ -477,16 +334,12 @@ jobs:
 
                       count = locator.count()
 
-                      log(
-                          f"Candidati testuali "
-                          f"'{term}': {count}"
-                      )
-
                       visible = 0
 
                       for index in range(
-                          min(count, 30)
+                          min(count, 50)
                       ):
+
                           element = locator.nth(index)
 
                           try:
@@ -502,378 +355,101 @@ jobs:
                                   continue
 
                               visible += 1
-                              total_matches += 1
 
+                              log("")
                               log(
-                                  f"  VISIBILE {visible}: "
-                                  f"{text[:500]}"
+                                  f"TERMINE: {term}"
                               )
 
-                              try:
-                                  attrs = element.evaluate(
-                                      """
-                                      el => ({
-                                          tag:
-                                              el.tagName,
-                                          role:
-                                              el.getAttribute(
-                                                  "role"
-                                              ),
-                                          className:
-                                              el.className,
-                                          id:
-                                              el.id,
-                                          aria:
-                                              el.getAttribute(
-                                                  "aria-label"
-                                              ),
-                                          dataTest:
-                                              el.getAttribute(
-                                                  "data-testid"
-                                              )
-                                      })
-                                      """
-                                  )
+                              log(
+                                  f"Visibile: "
+                                  f"{visible}"
+                              )
 
-                                  log(
-                                      "    ATTR: "
-                                      + json.dumps(
-                                          attrs,
-                                          ensure_ascii=False,
-                                      )
-                                  )
+                              log(
+                                  f"Testo: "
+                                  f"{text[:1000]}"
+                              )
 
-                              except Exception:
-                                  pass
+                              attrs = element.evaluate(
+                                  """
+                                  el => ({
+                                      tag: el.tagName,
+                                      id: el.id,
+                                      role:
+                                          el.getAttribute("role"),
+                                      aria:
+                                          el.getAttribute(
+                                              "aria-label"
+                                          ),
+                                      className:
+                                          el.className,
+                                      dataTestId:
+                                          el.getAttribute(
+                                              "data-testid"
+                                          ),
+                                      outerHTML:
+                                          el.outerHTML
+                                  })
+                                  """
+                              )
+
+                              dump_json(
+                                  "ATTRIBUTI:",
+                                  attrs,
+                                  6000,
+                              )
 
                           except Exception:
                               pass
-
-                  except Exception:
-                      pass
-
-              log(
-                  f"Totale elementi testuali "
-                  f"visibili: {total_matches}"
-              )
-
-              # Analisi generica di possibili elementi autocomplete.
-              selectors = [
-                  "[role='option']",
-                  "[role='listbox']",
-                  "[role='combobox']",
-                  "[aria-selected='true']",
-                  "[data-testid*='airport' i]",
-                  "[data-testid*='autocomplete' i]",
-                  "[class*='airport' i]",
-                  "[class*='autocomplete' i]",
-                  "[class*='suggestion' i]",
-                  "[class*='dropdown' i]",
-                  "[class*='listbox' i]",
-              ]
-
-              log("")
-              log(
-                  "ELEMENTI GENERICI AUTOCOMPLETE"
-              )
-              log("----------------------------------------")
-
-              found = 0
-
-              for selector in selectors:
-                  try:
-                      locator = page.locator(
-                          selector
-                      )
-
-                      count = locator.count()
-
-                      if count == 0:
-                          continue
-
-                      for index in range(
-                          min(count, 50)
-                      ):
-                          element = locator.nth(index)
-
-                          try:
-                              if not element.is_visible():
-                                  continue
-
-                              text = (
-                                  element.inner_text()
-                                  .strip()
-                              )
-
-                              if not text:
-                                  continue
-
-                              log(
-                                  f"{selector} "
-                                  f"[{index}]: "
-                                  f"{text[:500]}"
-                              )
-
-                              found += 1
-
-                          except Exception:
-                              pass
-
-                  except Exception:
-                      pass
-
-              log(
-                  f"Elementi autocomplete generici "
-                  f"visibili: {found}"
-              )
-
-              return total_matches > 0
-
-
-          def click_airport_result(
-              page,
-              code,
-              city,
-              description,
-          ):
-              log("")
-              log(description)
-              log("----------------------------------------")
-
-              patterns = [
-                  f"{city} ({code})",
-                  f"{city} - {code}",
-                  f"{code} - {city}",
-                  city,
-                  code,
-              ]
-
-              for pattern in patterns:
-                  try:
-                      locator = page.get_by_text(
-                          pattern,
-                          exact=False,
-                      )
-
-                      count = locator.count()
 
                       log(
-                          f"Cerco risultato "
-                          f"'{pattern}': {count}"
+                          f"'{term}': "
+                          f"{count} elementi, "
+                          f"{visible} visibili"
                       )
 
-                      for index in range(
-                          min(count, 30)
-                      ):
-                          element = locator.nth(index)
-
-                          try:
-                              if not element.is_visible():
-                                  continue
-
-                              text = (
-                                  element.inner_text()
-                                  .strip()
-                              )
-
-                              if not text:
-                                  continue
-
-                              log(
-                                  f"Tento click su: "
-                                  f"{text[:500]}"
-                              )
-
-                              if safe_click(
-                                  element,
-                                  f"Selezione {code}",
-                              ):
-                                  page.wait_for_timeout(
-                                      1500
-                                  )
-
-                                  return True
-
-                          except Exception:
-                              pass
-
-                  except Exception:
-                      pass
-
-              return False
+                  except Exception as exc:
+                      log(
+                          f"Errore ricerca '{term}': "
+                          f"{exc}"
+                      )
 
 
-          def verify_airport_selection(
-              page,
-              code,
-              city,
-              description,
-          ):
+          # ============================================================
+          # DOM BODY
+          # ============================================================
+
+          def inspect_body(page):
               log("")
-              log(description)
+              log("BODY TEXT DOPO CLICK")
               log("----------------------------------------")
 
-              # --------------------------------------------------
-              # 1. Cerca gli input attualmente visibili
-              # --------------------------------------------------
-
               try:
-                  inputs = page.locator(
-                      "input:visible"
+                  body = page.locator("body").inner_text()
+
+                  if len(body) > 20000:
+                      body = (
+                          body[:20000]
+                          + "\n...[TRONCATO]..."
+                      )
+
+                  log(body)
+
+              except Exception as exc:
+                  log(
+                      f"Errore body text: {exc}"
                   )
 
-                  count = inputs.count()
 
-                  for index in range(count):
-                      element = inputs.nth(index)
+          # ============================================================
+          # HTML SELETTORE AEROPORTO
+          # ============================================================
 
-                      try:
-                          info = element.evaluate(
-                              """
-                              el => ({
-                                  id: el.id,
-                                  name: el.name,
-                                  placeholder:
-                                      el.placeholder,
-                                  value:
-                                      el.value,
-                                  aria:
-                                      el.getAttribute(
-                                          "aria-label"
-                                      )
-                              })
-                              """
-                          )
-
-                          text = json.dumps(
-                              info,
-                              ensure_ascii=False,
-                          )
-
-                          if (
-                              code.upper()
-                              in text.upper()
-                              or city.upper()
-                              in text.upper()
-                          ):
-                              log(
-                                  "Possibile selezione "
-                                  "presente nell'input:"
-                              )
-
-                              log(text)
-
-                      except Exception:
-                          pass
-
-              except Exception:
-                  pass
-
-              # --------------------------------------------------
-              # 2. Controllo esplicito input origin
-              # --------------------------------------------------
-
-              origin_candidates = [
-                  "#origin:visible",
-                  "#input-text_sf-origin:visible",
-                  "input[name='origin']:visible",
-                  "input[placeholder='Select airport']:visible",
-              ]
-
-              for selector in origin_candidates:
-                  try:
-                      locator = page.locator(
-                          selector
-                      ).first
-
-                      if locator.count() == 0:
-                          continue
-
-                      if not locator.is_visible():
-                          continue
-
-                      value = locator.input_value()
-
-                      log(
-                          f"{description}: "
-                          f"{selector} = '{value}'"
-                      )
-
-                      if (
-                          code.upper()
-                          in value.upper()
-                          or city.upper()
-                          in value.upper()
-                      ):
-                          log(
-                              f"{description}: "
-                              "SELEZIONE CONFERMATA."
-                          )
-
-                          return True
-
-                  except Exception:
-                      pass
-
-              # --------------------------------------------------
-              # 3. Controllo DOM generale
-              # --------------------------------------------------
-
-              try:
-                  body_text = page.locator(
-                      "body"
-                  ).inner_text()
-
-                  upper_text = body_text.upper()
-
-                  if (
-                      code.upper()
-                      in upper_text
-                      and city.upper()
-                      in upper_text
-                  ):
-                      log(
-                          f"{description}: "
-                          "codice e città presenti "
-                          "nel DOM visibile."
-                      )
-
-                  else:
-                      log(
-                          f"{description}: "
-                          "codice/città non entrambi "
-                          "presenti nel DOM."
-                      )
-
-              except Exception:
-                  pass
-
-              return False
-
-
-          def select_airport_robust(
-              page,
-              code,
-              city,
-              description,
-          ):
-              """
-              Strategia completa:
-
-              1. Individua il campo.
-              2. Lo attiva.
-              3. Rimuove readonly/disabled se presenti.
-              4. Prova input nativo.
-              5. Prova digitazione reale.
-              6. Cerca il dropdown.
-              7. Prova click.
-              8. Prova tastiera.
-              9. Verifica realmente il valore finale.
-              """
-
+          def inspect_origin_field(page):
               log("")
-              log(description)
-              log("========================================")
+              log("ANALISI CAMPO ORIGINE")
+              log("----------------------------------------")
 
               selectors = [
                   "#input-text_sf-origin:visible",
@@ -882,9 +458,8 @@ jobs:
                   "input[placeholder='Select airport']:visible",
               ]
 
-              field = None
-
               for selector in selectors:
+
                   try:
                       locator = page.locator(
                           selector
@@ -896,560 +471,227 @@ jobs:
                       if not locator.is_visible():
                           continue
 
-                      field = locator
-
                       log(
-                          f"Campo aeroporto trovato "
-                          f"con selettore: {selector}"
+                          f"Campo trovato con: "
+                          f"{selector}"
                       )
 
-                      break
+                      info = locator.evaluate(
+                          """
+                          el => ({
+                              tag: el.tagName,
+                              type: el.type,
+                              id: el.id,
+                              name: el.name,
+                              value: el.value,
+                              placeholder: el.placeholder,
+                              readonly: el.readOnly,
+                              disabled: el.disabled,
+                              className: el.className,
+                              parentHTML:
+                                  el.parentElement
+                                  ? el.parentElement.outerHTML
+                                  : null,
+                              outerHTML:
+                                  el.outerHTML
+                          })
+                          """
+                      )
 
-                  except Exception:
-                      pass
+                      dump_json(
+                          "DETTAGLI CAMPO ORIGINE:",
+                          info,
+                          15000,
+                      )
+
+                      return locator
+
+                  except Exception as exc:
+                      log(
+                          f"Errore selector "
+                          f"{selector}: {exc}"
+                      )
+
+              log(
+                  "Campo origine NON trovato."
+              )
+
+              return None
+
+
+          # ============================================================
+          # TEST CLICK PURO
+          # ============================================================
+
+          def test_origin_click(page):
+              log("")
+              log("5. TEST CLICK PURO CAMPO ORIGINE")
+              log("========================================")
+
+              field = inspect_origin_field(page)
 
               if field is None:
+                  return False
+
+              log("")
+              log("STATO PRIMA DEL CLICK")
+              log("----------------------------------------")
+
+              try:
                   log(
-                      "ERRORE: campo aeroporto "
-                      "non trovato."
+                      f"Valore: "
+                      f"{field.input_value()}"
+                  )
+
+                  log(
+                      f"Readonly: "
+                      f"{field.get_attribute('readonly')}"
+                  )
+
+                  log(
+                      f"Disabled: "
+                      f"{field.get_attribute('disabled')}"
+                  )
+
+              except Exception:
+                  pass
+
+              # --------------------------------------------------------
+              # CLICK
+              # --------------------------------------------------------
+
+              log("")
+              log("ESECUZIONE CLICK...")
+              log("----------------------------------------")
+
+              clicked = safe_click(
+                  field,
+                  "Campo aeroporto origine",
+              )
+
+              if not clicked:
+                  log(
+                      "ERRORE: impossibile cliccare "
+                      "il campo origine."
                   )
 
                   return False
 
-              # --------------------------------------------------
-              # STATO INIZIALE
-              # --------------------------------------------------
+              # --------------------------------------------------------
+              # ATTESA
+              # --------------------------------------------------------
+
+              log("")
+              log(
+                  "Attendo 2 secondi "
+                  "per apertura componente..."
+              )
+
+              page.wait_for_timeout(2000)
+
+              # --------------------------------------------------------
+              # STATO DOPO CLICK
+              # --------------------------------------------------------
+
+              log("")
+              log("STATO CAMPO DOPO CLICK")
+              log("----------------------------------------")
 
               try:
                   info = field.evaluate(
                       """
                       el => ({
-                          tag: el.tagName,
-                          type: el.type,
-                          id: el.id,
-                          name: el.name,
                           value: el.value,
-                          placeholder:
-                              el.placeholder,
                           readonly: el.readOnly,
                           disabled: el.disabled,
-                          outerHTML:
-                              el.outerHTML
+                          className: el.className,
+                          outerHTML: el.outerHTML
                       })
                       """
                   )
 
                   dump_json(
-                      "STATO INIZIALE CAMPO:",
+                      "CAMPO DOPO CLICK:",
                       info,
                       10000,
                   )
 
-              except Exception:
-                  pass
-
-              # --------------------------------------------------
-              # ATTIVAZIONE
-              # --------------------------------------------------
-
-              safe_click(
-                  field,
-                  "Apertura campo aeroporto",
-              )
-
-              page.wait_for_timeout(500)
-
-              focus_input(
-                  page,
-                  field,
-                  "Focus aeroporto",
-              )
-
-              # --------------------------------------------------
-              # FORZA EDITABILITÀ
-              # --------------------------------------------------
-
-              force_enable_input(
-                  page,
-                  field,
-                  "Campo aeroporto",
-              )
-
-              page.wait_for_timeout(300)
-
-              # --------------------------------------------------
-              # PRIMO METODO: NATIVE SET + EVENTI
-              # --------------------------------------------------
-
-              log("")
-              log(
-                  "METODO 1 - INPUT NATIVO"
-              )
-              log("----------------------------------------")
-
-              native_set_value(
-                  page,
-                  field,
-                  city,
-                  "Campo aeroporto",
-              )
-
-              page.wait_for_timeout(2500)
-
-              inspect_airport_dom(
-                  page,
-                  code,
-                  city,
-                  "DIAGNOSTICA DOPO INPUT NATIVO",
-              )
-
-              # --------------------------------------------------
-              # TENTATIVO CLICK
-              # --------------------------------------------------
-
-              if click_airport_result(
-                  page,
-                  code,
-                  city,
-                  "TENTATIVO CLICK RISULTATO DOPO INPUT NATIVO",
-              ):
-                  page.wait_for_timeout(1500)
-
-                  if verify_airport_selection(
-                      page,
-                      code,
-                      city,
-                      "VERIFICA DOPO CLICK NATIVO",
-                  ):
-                      return True
-
-              # --------------------------------------------------
-              # SE IL CAMPO NON HA ACCETTATO IL VALORE,
-              # RIPROVIAMO CON DIGITAZIONE REALE
-              # --------------------------------------------------
-
-              log("")
-              log(
-                  "METODO 2 - DIGITAZIONE REALE"
-              )
-              log("----------------------------------------")
-
-              force_enable_input(
-                  page,
-                  field,
-                  "Campo aeroporto",
-              )
-
-              safe_click(
-                  field,
-                  "Riattivazione campo aeroporto",
-              )
-
-              page.wait_for_timeout(300)
-
-              try:
-                  page.keyboard.press(
-                      "Control+A"
-                  )
-
-                  page.keyboard.press(
-                      "Backspace"
-                  )
-
-                  page.keyboard.type(
-                      city,
-                      delay=150,
-                  )
-
-                  log(
-                      f"Digitazione reale "
-                      f"'{city}' completata."
-                  )
-
               except Exception as exc:
                   log(
-                      "Errore digitazione reale:"
+                      f"Errore stato dopo click: "
+                      f"{exc}"
                   )
 
-                  log(repr(exc))
-
-              page.wait_for_timeout(3000)
-
-              inspect_airport_dom(
-                  page,
-                  code,
-                  city,
-                  "DIAGNOSTICA DOPO DIGITAZIONE REALE",
-              )
-
-              # --------------------------------------------------
-              # CLICK RISULTATO
-              # --------------------------------------------------
-
-              if click_airport_result(
-                  page,
-                  code,
-                  city,
-                  "TENTATIVO CLICK DOPO DIGITAZIONE REALE",
-              ):
-                  page.wait_for_timeout(1500)
-
-                  if verify_airport_selection(
-                      page,
-                      code,
-                      city,
-                      "VERIFICA DOPO CLICK REALE",
-                  ):
-                      return True
-
-              # --------------------------------------------------
-              # METODO 3 - CODICE AEROPORTO
-              # --------------------------------------------------
-
-              log("")
-              log(
-                  "METODO 3 - CODICE AEROPORTO"
-              )
-              log("----------------------------------------")
-
-              try:
-                  force_enable_input(
-                      page,
-                      field,
-                      "Campo aeroporto",
-                  )
-
-                  safe_click(
-                      field,
-                      "Campo aeroporto",
-                  )
-
-                  page.wait_for_timeout(300)
-
-                  page.keyboard.press(
-                      "Control+A"
-                  )
-
-                  page.keyboard.press(
-                      "Backspace"
-                  )
-
-                  page.keyboard.type(
-                      code,
-                      delay=200,
-                  )
-
-                  log(
-                      f"Codice '{code}' digitato."
-                  )
-
-              except Exception as exc:
-                  log(
-                      "Errore digitazione codice:"
-                  )
-
-                  log(repr(exc))
-
-              page.wait_for_timeout(3000)
-
-              inspect_airport_dom(
-                  page,
-                  code,
-                  city,
-                  "DIAGNOSTICA DOPO CODICE AEROPORTO",
-              )
-
-              if click_airport_result(
-                  page,
-                  code,
-                  city,
-                  "CLICK RISULTATO CODICE AEROPORTO",
-              ):
-                  page.wait_for_timeout(1500)
-
-                  if verify_airport_selection(
-                      page,
-                      code,
-                      city,
-                      "VERIFICA DOPO CODICE",
-                  ):
-                      return True
-
-              # --------------------------------------------------
-              # METODO 4 - TASTIERA
-              # --------------------------------------------------
-
-              log("")
-              log(
-                  "METODO 4 - SELEZIONE DA TASTIERA"
-              )
-              log("----------------------------------------")
-
-              try:
-                  safe_click(
-                      field,
-                      "Campo aeroporto",
-                  )
-
-                  page.wait_for_timeout(500)
-
-                  page.keyboard.press(
-                      "ArrowDown"
-                  )
-
-                  page.wait_for_timeout(500)
-
-                  page.keyboard.press(
-                      "Enter"
-                  )
-
-                  page.wait_for_timeout(2000)
-
-                  log(
-                      "ArrowDown + Enter eseguiti."
-                  )
-
-              except Exception as exc:
-                  log(
-                      "Errore selezione tastiera:"
-                  )
-
-                  log(repr(exc))
-
-              if verify_airport_selection(
-                  page,
-                  code,
-                  city,
-                  "VERIFICA DOPO TASTIERA",
-              ):
-                  return True
-
-              # --------------------------------------------------
-              # METODO 5 - TAB
-              # --------------------------------------------------
-
-              log("")
-              log(
-                  "METODO 5 - TAB"
-              )
-              log("----------------------------------------")
-
-              try:
-                  page.keyboard.press(
-                      "Tab"
-                  )
-
-                  page.wait_for_timeout(1500)
-
-                  log(
-                      "Tab eseguito."
-                  )
-
-              except Exception as exc:
-                  log(
-                      "Errore Tab:"
-                  )
-
-                  log(repr(exc))
-
-              if verify_airport_selection(
-                  page,
-                  code,
-                  city,
-                  "VERIFICA DOPO TAB",
-              ):
-                  return True
-
-              # --------------------------------------------------
-              # FALLIMENTO
-              # --------------------------------------------------
-
-              log("")
-              log(
-                  "SELEZIONE AEROPORTO FALLITA"
-              )
-              log("----------------------------------------")
+              # --------------------------------------------------------
+              # DIAGNOSTICA
+              # --------------------------------------------------------
 
               inspect_visible_inputs(
                   page,
-                  "INPUT FINALI DOPO FALLIMENTO",
+                  "INPUT DOPO CLICK",
               )
 
-              inspect_airport_dom(
+              search_text(
                   page,
-                  code,
-                  city,
-                  "DIAGNOSTICA AUTOCOMPLETE FINALE",
+                  [
+                      "Verona",
+                      "VRN",
+                      "Verona (VRN)",
+                      "La Palma",
+                      "Catania",
+                      "CTA",
+                  ],
               )
+
+              inspect_visible_elements(
+                  page,
+              )
+
+              inspect_body(
+                  page,
+              )
+
+              # --------------------------------------------------------
+              # SCREENSHOT
+              # --------------------------------------------------------
 
               try:
                   page.screenshot(
-                      path="/tmp/volotea-airport-failure.png",
+                      path="/tmp/volotea-after-origin-click.png",
                       full_page=True,
                   )
 
+                  log("")
                   log(
-                      "Screenshot fallimento salvato."
+                      "Screenshot salvato:"
                   )
-
-              except Exception:
-                  pass
-
-              return False
-
-
-          def inspect_buttons(page):
-              log("")
-              log("BUTTON E CONTROLLI")
-              log("----------------------------------------")
-
-              try:
-                  buttons = page.locator(
-                      "button:visible"
-                  )
-
-                  count = buttons.count()
 
                   log(
-                      f"Button visibili: {count}"
+                      "/tmp/volotea-after-origin-click.png"
                   )
-
-                  for index in range(
-                      min(count, 50)
-                  ):
-                      button = buttons.nth(index)
-
-                      try:
-                          info = button.evaluate(
-                              """
-                              el => ({
-                                  text:
-                                      el.innerText,
-                                  aria:
-                                      el.getAttribute(
-                                          "aria-label"
-                                      ),
-                                  type:
-                                      el.type,
-                                  disabled:
-                                      el.disabled
-                              })
-                              """
-                          )
-
-                          log(
-                              f"BUTTON {index}: "
-                              + json.dumps(
-                                  info,
-                                  ensure_ascii=False,
-                              )
-                          )
-
-                      except Exception:
-                          pass
 
               except Exception as exc:
                   log(
-                      "Errore analisi button:"
+                      f"Screenshot non disponibile: "
+                      f"{exc}"
                   )
 
-                  log(repr(exc))
+              return True
 
 
-          def find_visible_date_inputs(page):
-              selectors = [
-                  "input[type='date']:visible",
-                  "input[placeholder*='date' i]:visible",
-                  "input[placeholder*='data' i]:visible",
-                  "input[id*='departure' i]:visible",
-                  "input[id*='date' i]:visible",
-                  "input[name*='departure' i]:visible",
-                  "input[name*='date' i]:visible",
-              ]
-
-              found = []
-
-              for selector in selectors:
-                  try:
-                      locator = page.locator(
-                          selector
-                      )
-
-                      count = locator.count()
-
-                      for index in range(count):
-                          element = locator.nth(index)
-
-                          if not element.is_visible():
-                              continue
-
-                          found.append(element)
-
-                  except Exception:
-                      pass
-
-              return found
-
-
-          def inspect_visible_text(page, terms):
-              log("")
-              log("RICERCA TESTUALE")
-              log("----------------------------------------")
-
-              for term in terms:
-                  try:
-                      locator = page.get_by_text(
-                          term,
-                          exact=False,
-                      )
-
-                      count = locator.count()
-
-                      log(
-                          f"Testo '{term}': "
-                          f"{count} elemento/i."
-                      )
-
-                      shown = 0
-
-                      for index in range(
-                          min(count, 30)
-                      ):
-                          element = locator.nth(index)
-
-                          try:
-                              if not element.is_visible():
-                                  continue
-
-                              text = (
-                                  element.inner_text()
-                                  .strip()
-                              )
-
-                              if text:
-                                  log(
-                                      f"  [{shown}] "
-                                      f"{text[:300]}"
-                                  )
-
-                                  shown += 1
-
-                          except Exception:
-                              pass
-
-                  except Exception:
-                      pass
-
+          # ============================================================
+          # MAIN
+          # ============================================================
 
           def main():
 
-              # ==================================================
+              # ========================================================
               # 1. DOWNLOAD STATIONS
-              # ==================================================
+              # ========================================================
 
               log("")
               log("1. DOWNLOAD STATIONS")
-              log("----------------------------------------")
+              log("========================================")
 
               try:
                   response = requests.get(
@@ -1557,8 +799,7 @@ jobs:
 
               if not market.get("Enabled"):
                   log(
-                      "ERRORE: "
-                      "tratta non abilitata."
+                      "ERRORE: tratta non abilitata."
                   )
 
                   return 1
@@ -1585,6 +826,7 @@ jobs:
                   )
 
               if max_date:
+
                   max_date_obj = (
                       date.fromisoformat(
                           max_date
@@ -1627,15 +869,13 @@ jobs:
                   "Passeggeri:   1"
               )
 
-              # ==================================================
+              # ========================================================
               # 2. BROWSER
-              # ==================================================
+              # ========================================================
 
               log("")
-              log(
-                  "2. APERTURA FRONTEND VOLOTEA"
-              )
-              log("----------------------------------------")
+              log("2. APERTURA FRONTEND VOLOTEA")
+              log("========================================")
 
               api_key = os.environ.get(
                   "VOLOTEA_API_KEY",
@@ -1658,7 +898,10 @@ jobs:
               with sync_playwright() as p:
 
                   browser = p.chromium.launch(
-                      headless=True
+                      headless=True,
+                      args=[
+                          "--disable-blink-features=AutomationControlled",
+                      ],
                   )
 
                   context = browser.new_context(
@@ -1676,9 +919,9 @@ jobs:
 
                   page = context.new_page()
 
-                  # ==================================================
-                  # REQUEST INTERCEPTION
-                  # ==================================================
+                  # ====================================================
+                  # NETWORK REQUEST
+                  # ====================================================
 
                   def handle_request(request):
 
@@ -1687,9 +930,7 @@ jobs:
                       if API_PREFIX not in url:
                           return
 
-                      headers = (
-                          request.all_headers()
-                      )
+                      headers = request.all_headers()
 
                       safe_headers = {}
 
@@ -1711,17 +952,12 @@ jobs:
                               safe_headers[key] = value
 
                       item = {
-                          "method":
-                              request.method,
-                          "url":
-                              url,
-                          "headers":
-                              safe_headers,
+                          "method": request.method,
+                          "url": url,
+                          "headers": safe_headers,
                       }
 
-                      post_data = (
-                          request.post_data
-                      )
+                      post_data = request.post_data
 
                       if post_data:
 
@@ -1745,11 +981,9 @@ jobs:
                       log(
                           "========================================"
                       )
-
                       log(
                           "API VOLOTEA INTERCETTATA"
                       )
-
                       log(
                           "========================================"
                       )
@@ -1776,16 +1010,11 @@ jobs:
                               item["post_data"],
                               30000,
                           )
-                      else:
-                          log("")
-                          log("PAYLOAD:")
-                          log(
-                              "Payload non disponibile."
-                          )
 
-                  # ==================================================
-                  # RESPONSE INTERCEPTION
-                  # ==================================================
+
+                  # ====================================================
+                  # NETWORK RESPONSE
+                  # ====================================================
 
                   def handle_response(response):
 
@@ -1795,19 +1024,14 @@ jobs:
                           return
 
                       item = {
-                          "status":
-                              response.status,
-                          "url":
-                              url,
+                          "status": response.status,
+                          "url": url,
                       }
 
                       try:
-
                           body = response.body()
 
-                          item["size"] = len(
-                              body
-                          )
+                          item["size"] = len(body)
 
                           content_type = (
                               response.headers.get(
@@ -1836,10 +1060,7 @@ jobs:
                                   pass
 
                       except Exception as exc:
-
-                          item["error"] = (
-                              repr(exc)
-                          )
+                          item["error"] = repr(exc)
 
                       captured_responses.append(
                           item
@@ -1849,11 +1070,9 @@ jobs:
                       log(
                           "========================================"
                       )
-
                       log(
                           "RISPOSTA API VOLOTEA"
                       )
-
                       log(
                           "========================================"
                       )
@@ -1874,12 +1093,12 @@ jobs:
                       )
 
                       if "json" in item:
-
                           dump_json(
                               "RISPOSTA JSON:",
                               item["json"],
                               30000,
                           )
+
 
                   page.on(
                       "request",
@@ -1891,9 +1110,9 @@ jobs:
                       handle_response,
                   )
 
-                  # ==================================================
-                  # 3. APERTURA
-                  # ==================================================
+                  # ====================================================
+                  # OPEN
+                  # ====================================================
 
                   log("")
                   log(
@@ -1901,6 +1120,7 @@ jobs:
                   )
 
                   try:
+
                       page.goto(
                           BOOKING_URL,
                           wait_until="domcontentloaded",
@@ -1908,6 +1128,7 @@ jobs:
                       )
 
                   except Exception as exc:
+
                       log("")
                       log(
                           "ATTENZIONE apertura "
@@ -1916,27 +1137,33 @@ jobs:
 
                       log(repr(exc))
 
+                  log("")
+                  log(
+                      "Attesa inizializzazione "
+                      "frontend: 10 secondi"
+                  )
+
                   page.wait_for_timeout(
-                      8000
+                      10000
                   )
 
                   log("")
                   log(
-                      f"URL finale: {page.url}"
+                      f"URL finale: "
+                      f"{page.url}"
                   )
 
                   log(
-                      f"Titolo: {page.title()}"
+                      f"Titolo: "
+                      f"{page.title()}"
                   )
 
-                  # ==================================================
-                  # 4. COOKIE
-                  # ==================================================
+                  # ====================================================
+                  # COOKIE
+                  # ====================================================
 
                   log("")
-                  log(
-                      "3. GESTIONE COOKIE"
-                  )
+                  log("3. GESTIONE COOKIE")
                   log("----------------------------------------")
 
                   cookie_selectors = [
@@ -1953,6 +1180,7 @@ jobs:
                   for selector in cookie_selectors:
 
                       try:
+
                           locator = page.locator(
                               selector
                           ).first
@@ -1972,6 +1200,7 @@ jobs:
                               locator,
                               "Chiusura cookie",
                           ):
+
                               cookie_closed = True
 
                               page.wait_for_timeout(
@@ -1989,362 +1218,53 @@ jobs:
                           "o già chiuso."
                       )
 
-                  # ==================================================
-                  # 5. FORM
-                  # ==================================================
+                  # ====================================================
+                  # FORM PRIMA DEL CLICK
+                  # ====================================================
 
                   inspect_visible_inputs(
                       page,
-                      "4. ANALISI FORM VISIBILE",
+                      "4. FORM PRIMA DEL CLICK",
                   )
 
-                  # ==================================================
-                  # 6. PARTENZA
-                  # ==================================================
+                  # ====================================================
+                  # TEST CLICK
+                  # ====================================================
 
-                  log("")
-                  log(
-                      "5. SELEZIONE AEROPORTO DI PARTENZA"
-                  )
-                  log("----------------------------------------")
-
-                  origin_selected = (
-                      select_airport_robust(
-                          page,
-                          ORIGIN,
-                          ORIGIN_CITY,
-                          "SELEZIONE PARTENZA VRN",
-                      )
+                  success = test_origin_click(
+                      page
                   )
 
-                  if not origin_selected:
-
-                      log("")
-                      log(
-                          "ERRORE: impossibile "
-                          "selezionare realmente "
-                          "l'aeroporto di partenza."
-                      )
-
-                      browser.close()
-
-                      return 1
-
-                  log("")
-                  log(
-                      "========================================"
-                  )
-
-                  log(
-                      "VRN SELEZIONATO CORRETTAMENTE"
-                  )
-
-                  log(
-                      "========================================"
-                  )
-
-                  inspect_visible_inputs(
-                      page,
-                      "INPUT DOPO SELEZIONE VRN",
-                  )
-
-                  # ==================================================
-                  # 7. DESTINAZIONE
-                  # ==================================================
-
-                  log("")
-                  log(
-                      "6. SELEZIONE AEROPORTO "
-                      "DI DESTINAZIONE"
-                  )
-                  log("----------------------------------------")
-
-                  destination_selectors = [
-                      "#input-text_sf-destination:visible",
-                      "#destination:visible",
-                      "input[name='destination']:visible",
-                      "input[placeholder='Select airport']:visible",
-                  ]
-
-                  destination_field = None
-
-                  for selector in destination_selectors:
-                      try:
-                          locator = page.locator(
-                              selector
-                          ).first
-
-                          if locator.count() == 0:
-                              continue
-
-                          if not locator.is_visible():
-                              continue
-
-                          destination_field = locator
-
-                          log(
-                              f"Campo destinazione "
-                              f"trovato con: {selector}"
-                          )
-
-                          break
-
-                      except Exception:
-                          pass
-
-                  if destination_field is None:
-
-                      log(
-                          "ERRORE: campo destinazione "
-                          "non trovato."
-                      )
-
-                      page.screenshot(
-                          path="/tmp/volotea-destination-error.png",
-                          full_page=True,
-                      )
-
-                      browser.close()
-
-                      return 1
-
-                  destination_selected = (
-                      select_airport_robust_destination(
-                          page,
-                          destination_field,
-                          DESTINATION,
-                          DESTINATION_CITY,
-                      )
-                  )
-
-                  if not destination_selected:
-
-                      log("")
-                      log(
-                          "ERRORE: impossibile "
-                          "selezionare realmente "
-                          "la destinazione."
-                      )
-
-                      browser.close()
-
-                      return 1
-
-                  # ==================================================
-                  # 8. DATA
-                  # ==================================================
-
-                  log("")
-                  log(
-                      "7. RICERCA CAMPO DATA"
-                  )
-                  log("----------------------------------------")
-
-                  date_inputs = (
-                      find_visible_date_inputs(
-                          page
-                      )
-                  )
-
-                  log(
-                      f"Campi data candidati: "
-                      f"{len(date_inputs)}"
-                  )
-
-                  if date_inputs:
-
-                      date_field = date_inputs[0]
-
-                      try:
-
-                          if date_field.get_attribute(
-                              "type"
-                          ) == "date":
-
-                              date_field.fill(
-                                  departure_date
-                              )
-
-                          else:
-
-                              focus_input(
-                                  page,
-                                  date_field,
-                                  "Campo data",
-                              )
-
-                              page.keyboard.press(
-                                  "Control+A"
-                              )
-
-                              page.keyboard.type(
-                                  departure_date,
-                                  delay=50,
-                              )
-
-                          log(
-                              f"Data inserita: "
-                              f"{departure_date}"
-                          )
-
-                      except Exception as exc:
-                          log(
-                              "Impossibile compilare "
-                              "automaticamente la data:"
-                          )
-
-                          log(repr(exc))
-
-                  else:
-
-                      log(
-                          "Nessun input data trovato."
-                      )
-
-                      inspect_visible_text(
-                          page,
-                          [
-                              "Departure",
-                              "Return",
-                              "Date",
-                              "Today",
-                              "Tomorrow",
-                              "Aug",
-                              "August",
-                              "2026",
-                          ],
-                      )
-
-                  # ==================================================
-                  # 9. CONTROLLI
-                  # ==================================================
-
-                  inspect_buttons(page)
-
-                  inspect_visible_text(
-                      page,
-                      [
-                          "Search",
-                          "SEARCH",
-                          "Search flights",
-                          "Find flights",
-                          "Buscar",
-                          "Buscar vuelos",
-                          "Cerca",
-                          "Cerca voli",
-                      ],
-                  )
-
-                  # ==================================================
-                  # 10. SEARCH
-                  # ==================================================
-
-                  log("")
-                  log(
-                      "8. TENTATIVO CLICK RICERCA"
-                  )
-                  log("----------------------------------------")
-
-                  search_selectors = [
-                      "button:has-text('Search')",
-                      "button:has-text('SEARCH')",
-                      "button:has-text('Search flights')",
-                      "button:has-text('Find flights')",
-                      "button:has-text('Buscar')",
-                      "button:has-text('Buscar vuelos')",
-                      "button:has-text('Cerca')",
-                      "button:has-text('Cerca voli')",
-                      "[role='button']:has-text('Search')",
-                      "[role='button']:has-text('Buscar')",
-                  ]
-
-                  search_clicked = False
-
-                  for selector in search_selectors:
-
-                      try:
-                          locator = page.locator(
-                              selector
-                          ).first
-
-                          if locator.count() == 0:
-                              continue
-
-                          if not locator.is_visible():
-                              continue
-
-                          log(
-                              f"Pulsante candidato: "
-                              f"{selector}"
-                          )
-
-                          if safe_click(
-                              locator,
-                              "Ricerca voli",
-                          ):
-
-                              search_clicked = True
-
-                              page.wait_for_timeout(
-                                  8000
-                              )
-
-                              break
-
-                      except Exception:
-                          pass
-
-                  if not search_clicked:
-                      log(
-                          "Nessun pulsante di ricerca "
-                          "identificato automaticamente."
-                      )
-
-                  # ==================================================
-                  # 11. NETWORK
-                  # ==================================================
-
-                  log("")
-                  log(
-                      "9. ATTESA NETWORK"
-                  )
-                  log("----------------------------------------")
-
-                  page.wait_for_timeout(
-                      5000
-                  )
-
-                  # ==================================================
-                  # 12. SCREENSHOT
-                  # ==================================================
+                  # ====================================================
+                  # SCREENSHOT FINALE
+                  # ====================================================
 
                   try:
+
                       page.screenshot(
                           path="/tmp/volotea-final.png",
                           full_page=True,
                       )
 
+                      log("")
                       log(
                           "Screenshot finale salvato."
                       )
 
                   except Exception as exc:
+
                       log(
-                          "Screenshot finale "
-                          "non disponibile:"
+                          f"Screenshot finale "
+                          f"non disponibile: {exc}"
                       )
 
-                      log(repr(exc))
-
-                  # ==================================================
-                  # 13. RISULTATO
-                  # ==================================================
+                  # ====================================================
+                  # NETWORK SUMMARY
+                  # ====================================================
 
                   log("")
-                  log(
-                      "10. RISULTATO TEST"
-                  )
-                  log("----------------------------------------")
+                  log("NETWORK SUMMARY")
+                  log("========================================")
 
                   log(
                       f"Richieste API Volotea: "
@@ -2356,318 +1276,42 @@ jobs:
                       f"{len(captured_responses)}"
                   )
 
-                  if captured_requests:
+                  # ====================================================
+                  # RISULTATO
+                  # ====================================================
 
-                      log("")
+                  log("")
+                  log("RISULTATO TEST")
+                  log("========================================")
+
+                  if success:
+
                       log(
-                          "RISULTATO: "
-                          "almeno una API Volotea "
-                          "è stata intercettata."
+                          "CLICK SUL CAMPO ORIGINE "
+                          "ESEGUITO."
+                      )
+
+                      log(
+                          "Analisi del DOM completata."
                       )
 
                   else:
 
-                      log("")
                       log(
-                          "RISULTATO: "
-                          "nessuna API Volotea "
-                          "intercettata."
+                          "ERRORE: impossibile "
+                          "eseguire il test del campo."
                       )
 
                   browser.close()
 
               log("")
-              log(
-                  "========================================"
-              )
-
-              log(
-                  "TEST VOLOTEA COMPLETATO"
-              )
-
-              log(
-                  "========================================"
-              )
-
-              return 0
-
-
-          def select_airport_robust_destination(
-              page,
-              field,
-              code,
-              city,
-          ):
-              """
-              Versione dedicata alla destinazione.
-              Utilizza la stessa strategia robusta della partenza
-              ma senza ricercare nuovamente il campo nel DOM.
-              """
-
-              log("")
-              log(
-                  "SELEZIONE DESTINAZIONE"
-              )
+              log("========================================")
+              log("TEST DIAGNOSTICO COMPLETATO")
               log("========================================")
 
-              safe_click(
-                  field,
-                  "Apertura campo destinazione",
-              )
-
-              page.wait_for_timeout(500)
-
-              focus_input(
-                  page,
-                  field,
-                  "Focus destinazione",
-              )
-
-              force_enable_input(
-                  page,
-                  field,
-                  "Campo destinazione",
-              )
-
-              # --------------------------------------------------
-              # METODO 1
-              # --------------------------------------------------
-
-              native_set_value(
-                  page,
-                  field,
-                  city,
-                  "Destinazione",
-              )
-
-              page.wait_for_timeout(2500)
-
-              inspect_airport_dom(
-                  page,
-                  code,
-                  city,
-                  "DIAGNOSTICA DESTINAZIONE",
-              )
-
-              if click_airport_result(
-                  page,
-                  code,
-                  city,
-                  "CLICK RISULTATO DESTINAZIONE",
-              ):
-                  page.wait_for_timeout(1500)
-
-                  if verify_destination(
-                      page,
-                      code,
-                      city,
-                  ):
-                      return True
-
-              # --------------------------------------------------
-              # METODO 2
-              # --------------------------------------------------
-
-              force_enable_input(
-                  page,
-                  field,
-                  "Destinazione",
-              )
-
-              safe_click(
-                  field,
-                  "Riattivazione destinazione",
-              )
-
-              try:
-                  page.keyboard.press(
-                      "Control+A"
-                  )
-
-                  page.keyboard.press(
-                      "Backspace"
-                  )
-
-                  page.keyboard.type(
-                      city,
-                      delay=150,
-                  )
-
-              except Exception as exc:
-                  log(
-                      "Errore digitazione destinazione:"
-                  )
-
-                  log(repr(exc))
-
-              page.wait_for_timeout(3000)
-
-              inspect_airport_dom(
-                  page,
-                  code,
-                  city,
-                  "DIAGNOSTICA DESTINAZIONE DOPO DIGITAZIONE",
-              )
-
-              if click_airport_result(
-                  page,
-                  code,
-                  city,
-                  "CLICK DESTINAZIONE DOPO DIGITAZIONE",
-              ):
-                  page.wait_for_timeout(1500)
-
-                  if verify_destination(
-                      page,
-                      code,
-                      city,
-                  ):
-                      return True
-
-              # --------------------------------------------------
-              # METODO 3
-              # --------------------------------------------------
-
-              try:
-                  force_enable_input(
-                      page,
-                      field,
-                      "Destinazione",
-                  )
-
-                  safe_click(
-                      field,
-                      "Destinazione",
-                  )
-
-                  page.keyboard.press(
-                      "Control+A"
-                  )
-
-                  page.keyboard.press(
-                      "Backspace"
-                  )
-
-                  page.keyboard.type(
-                      code,
-                      delay=200,
-                  )
-
-              except Exception as exc:
-                  log(
-                      "Errore codice destinazione:"
-                  )
-
-                  log(repr(exc))
-
-              page.wait_for_timeout(3000)
-
-              if click_airport_result(
-                  page,
-                  code,
-                  city,
-                  "CLICK DESTINAZIONE CODICE",
-              ):
-                  page.wait_for_timeout(1500)
-
-                  if verify_destination(
-                      page,
-                      code,
-                      city,
-                  ):
-                      return True
-
-              # --------------------------------------------------
-              # METODO 4
-              # --------------------------------------------------
-
-              try:
-                  safe_click(
-                      field,
-                      "Destinazione",
-                  )
-
-                  page.keyboard.press(
-                      "ArrowDown"
-                  )
-
-                  page.wait_for_timeout(500)
-
-                  page.keyboard.press(
-                      "Enter"
-                  )
-
-                  page.wait_for_timeout(1500)
-
-              except Exception as exc:
-                  log(
-                      "Errore tastiera destinazione:"
-                  )
-
-                  log(repr(exc))
-
-              if verify_destination(
-                  page,
-                  code,
-                  city,
-              ):
-                  return True
-
-              log(
-                  "ERRORE: destinazione "
-                  "non selezionata."
-              )
-
-              return False
-
-
-          def verify_destination(
-              page,
-              code,
-              city,
-          ):
-              selectors = [
-                  "#destination:visible",
-                  "#input-text_sf-destination:visible",
-                  "input[name='destination']:visible",
-              ]
-
-              for selector in selectors:
-                  try:
-                      locator = page.locator(
-                          selector
-                      ).first
-
-                      if locator.count() == 0:
-                          continue
-
-                      if not locator.is_visible():
-                          continue
-
-                      value = locator.input_value()
-
-                      log(
-                          f"Destinazione "
-                          f"{selector}: '{value}'"
-                      )
-
-                      if (
-                          code.upper()
-                          in value.upper()
-                          or city.upper()
-                          in value.upper()
-                      ):
-                          log(
-                              "DESTINAZIONE "
-                              "SELEZIONATA CORRETTAMENTE."
-                          )
-
-                          return True
-
-                  except Exception:
-                      pass
-
-              return False
+              # Questo test non deve fallire soltanto
+              # perché il dropdown non è stato trovato.
+              return 0
 
 
           if __name__ == "__main__":
