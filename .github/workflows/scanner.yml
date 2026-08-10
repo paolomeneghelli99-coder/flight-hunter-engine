@@ -2,7 +2,6 @@ name: Flight Hunter Scanner
 
 on:
   workflow_dispatch:
-
   schedule:
     - cron: "0 */6 * * *"
 
@@ -17,7 +16,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
@@ -25,55 +24,42 @@ jobs:
           pip install requests playwright
           python -m playwright install --with-deps chromium
 
-      - name: Test Volotea airport selector
+      - name: Run Flight Hunter scanner
         env:
+          FH_BACKEND_URL: ${{ secrets.FH_BACKEND_URL }}
+          FH_API_KEY: ${{ secrets.FH_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           VOLOTEA_API_KEY: ${{ secrets.VOLOTEA_API_KEY }}
-        shell: bash
         run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "FLIGHT HUNTER - TEST VOLOTEA"
-          echo "DIAGNOSTICA SELETTORE AEROPORTI"
-          echo "========================================"
-
-          cat > /tmp/test_volotea.py <<'PYTHON'
-          import json
+          cat > scanner.py <<'PY'
           import os
-          import sys
-          from datetime import date, timedelta
+          import json
+          import re
+          import time
+          from datetime import datetime, timedelta
 
           import requests
-          from playwright.sync_api import sync_playwright
+          from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 
           # ============================================================
-          # CONFIGURAZIONE
+          # CONFIG
           # ============================================================
-
-          STATIONS_URL = (
-              "https://json.volotea.com/"
-              "dist/stations/stations.json"
-          )
-
-          BOOKING_URL = "https://book.volotea.com/"
-
-          API_PREFIX = "/api/spa/voe/"
 
           ORIGIN = "VRN"
-          ORIGIN_CITY = "Verona"
-
           DESTINATION = "CTA"
-          DESTINATION_CITY = "Catania"
+          DEPARTURE_DATE = "2026-08-11"
+          PASSENGERS = 1
 
-          USER_AGENT = (
-              "Mozilla/5.0 "
-              "(Linux; Android 6.0; Nexus 5 Build/MRA58N) "
-              "AppleWebKit/537.36 "
-              "(KHTML, like Gecko) "
-              "Chrome/147.0.0.0 "
-              "Mobile Safari/537.36"
-          )
+          VOLOTEA_HOME = "https://book.volotea.com/"
+          VOLOTEA_SEARCH = "https://book.volotea.com/search"
+
+          FH_BACKEND_URL = os.getenv("FH_BACKEND_URL", "")
+          FH_API_KEY = os.getenv("FH_API_KEY", "")
+          VOLOTEA_API_KEY = os.getenv("VOLOTEA_API_KEY", "")
+
+          HEADLESS = True
 
 
           # ============================================================
@@ -84,599 +70,812 @@ jobs:
               print(message, flush=True)
 
 
-          def dump_json(label, data, limit=30000):
-              log("")
-              log(label)
-              log("----------------------------------------")
+          # ============================================================
+          # GENERIC HELPERS
+          # ============================================================
 
+          def safe_text(locator):
               try:
-                  text = json.dumps(
-                      data,
-                      indent=2,
-                      ensure_ascii=False,
-                  )
+                  return locator.inner_text(timeout=3000).strip()
               except Exception:
-                  text = str(data)
+                  return ""
 
-              if len(text) > limit:
-                  text = (
-                      text[:limit]
-                      + "\n...[TRONCATO]..."
-                  )
-
-              log(text)
-
-
-          # ============================================================
-          # SAFE CLICK
-          # ============================================================
-
-          def safe_click(locator, description):
+          def visible(locator):
               try:
-                  locator.click(timeout=5000)
+                  return locator.is_visible(timeout=2000)
+              except Exception:
+                  return False
 
-                  log(
-                      f"{description}: "
-                      "CLICK NORMALE RIUSCITO"
-                  )
+          def click_force(locator):
+              locator.click(force=True, timeout=10000)
 
-                  return True
-
-              except Exception as exc:
-                  log(
-                      f"{description}: "
-                      "click normale fallito"
-                  )
-
-                  log(
-                      f"Motivo: {exc}"
-                  )
-
-              try:
-                  locator.click(
-                      timeout=5000,
-                      force=True,
-                  )
-
-                  log(
-                      f"{description}: "
-                      "CLICK FORZATO RIUSCITO"
-                  )
-
-                  return True
-
-              except Exception as exc:
-                  log(
-                      f"{description}: "
-                      "click forzato fallito"
-                  )
-
-                  log(
-                      f"Motivo: {exc}"
-                  )
-
-              return False
-
-
-          # ============================================================
-          # INPUT VISIBILI
-          # ============================================================
-
-          def inspect_visible_inputs(page, title):
+          def dump_visible_inputs(page, title):
               log("")
               log(title)
-              log("----------------------------------------")
+              log("-" * 60)
 
               inputs = page.locator("input:visible")
+              count = inputs.count()
+
+              log(f"Input visibili: {count}")
+
+              for i in range(count):
+                  try:
+                      data = inputs.nth(i).evaluate("""
+                      el => ({
+                          tag: el.tagName,
+                          type: el.type,
+                          id: el.id,
+                          name: el.name,
+                          placeholder: el.placeholder,
+                          value: el.value,
+                          readonly: el.readOnly,
+                          disabled: el.disabled,
+                          autocomplete: el.autocomplete,
+                          className: el.className
+                      })
+                      """)
+                      log(json.dumps(data, ensure_ascii=False, indent=2))
+                  except Exception as exc:
+                      log(f"Input {i}: errore {exc}")
+
+
+          # ============================================================
+          # STATIONS
+          # ============================================================
+
+          def download_stations():
+              log("")
+              log("1. DOWNLOAD STATIONS")
+              log("=" * 60)
+
+              # Endpoint già utilizzato dal progetto.
+              # Manteniamo la struttura compatibile con il backend corrente.
+              if not FH_BACKEND_URL:
+                  log("FH_BACKEND_URL non configurato")
+                  return []
+
+              url = FH_BACKEND_URL.rstrip("/") + "/stations"
+
+              headers = {}
+
+              if FH_API_KEY:
+                  headers["Authorization"] = f"Bearer {FH_API_KEY}"
 
               try:
-                  count = inputs.count()
-              except Exception:
-                  count = 0
+                  response = requests.get(url, headers=headers, timeout=30)
+
+                  log(f"HTTP status: {response.status_code}")
+
+                  if response.status_code != 200:
+                      log(response.text[:1000])
+                      return []
+
+                  data = response.json()
+
+                  if isinstance(data, list):
+                      stations = data
+                  elif isinstance(data, dict):
+                      stations = (
+                          data.get("stations")
+                          or data.get("data")
+                          or []
+                      )
+                  else:
+                      stations = []
+
+                  log(f"Stazioni presenti: {len(stations)}")
+
+                  markets = []
+
+                  for station in stations:
+                      if not isinstance(station, dict):
+                          continue
+
+                      code = (
+                          station.get("iata")
+                          or station.get("iata_code")
+                          or station.get("code")
+                      )
+
+                      if code == ORIGIN:
+                          destinations = (
+                              station.get("destinations")
+                              or station.get("markets")
+                              or []
+                          )
+
+                          for destination in destinations:
+                              if isinstance(destination, dict):
+                                  dcode = (
+                                      destination.get("iata")
+                                      or destination.get("iata_code")
+                                      or destination.get("code")
+                                  )
+                              else:
+                                  dcode = str(destination)
+
+                              if dcode:
+                                  markets.append(dcode)
+
+                  if markets:
+                      log(f"Mercati {ORIGIN}: {len(set(markets))}")
+
+                  return stations
+
+              except Exception as exc:
+                  log(f"Errore download stations: {exc}")
+                  return []
+
+
+          # ============================================================
+          # VOLOTEA
+          # ============================================================
+
+          def run_volotea_test():
+
+              log("")
+              log("2. APERTURA FRONTEND VOLOTEA")
+              log("=" * 60)
 
               log(
-                  f"Input visibili: {count}"
+                  "VOLOTEA_API_KEY: "
+                  + ("configurata" if VOLOTEA_API_KEY else "non configurata")
               )
 
-              for index in range(min(count, 50)):
-                  element = inputs.nth(index)
+              log(f"Apertura: {VOLOTEA_HOME}")
+              log("Attesa inizializzazione frontend: 10 secondi")
 
-                  try:
-                      info = element.evaluate(
-                          """
-                          el => ({
-                              tag: el.tagName,
-                              type: el.type,
-                              id: el.id,
-                              name: el.name,
-                              placeholder: el.placeholder,
-                              value: el.value,
-                              readonly: el.readOnly,
-                              disabled: el.disabled,
-                              aria: el.getAttribute("aria-label"),
-                              autocomplete:
-                                  el.getAttribute("autocomplete"),
-                              className: el.className,
-                              outerHTML: el.outerHTML
+              with sync_playwright() as p:
+
+                  browser = p.chromium.launch(
+                      headless=HEADLESS,
+                      args=[
+                          "--no-sandbox",
+                          "--disable-dev-shm-usage",
+                          "--disable-blink-features=AutomationControlled",
+                      ],
+                  )
+
+                  context = browser.new_context(
+                      locale="it-IT",
+                      timezone_id="Europe/Rome",
+                      viewport={
+                          "width": 1440,
+                          "height": 1000,
+                      },
+                      user_agent=(
+                          "Mozilla/5.0 (X11; Linux x86_64) "
+                          "AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) "
+                          "Chrome/147.0.0.0 Safari/537.36"
+                      ),
+                  )
+
+                  page = context.new_page()
+
+                  # ----------------------------------------------------
+                  # API logging
+                  # ----------------------------------------------------
+
+                  api_requests = []
+                  api_responses = []
+
+                  def on_request(request):
+                      url = request.url
+
+                      if "api.volotea.com" in url:
+                          api_requests.append({
+                              "method": request.method,
+                              "url": url
                           })
-                          """
-                      )
 
-                      dump_json(
-                          f"INPUT {index}:",
-                          info,
-                          8000,
-                      )
+                  def on_response(response):
+                      url = response.url
 
-                  except Exception as exc:
-                      log(
-                          f"Errore INPUT {index}: "
-                          f"{exc}"
-                      )
+                      if "api.volotea.com" in url:
+                          api_responses.append({
+                              "status": response.status,
+                              "url": url
+                          })
 
+                  page.on("request", on_request)
+                  page.on("response", on_response)
 
-          # ============================================================
-          # ELEMENTI VISIBILI DOPO IL CLICK
-          # ============================================================
+                  # ----------------------------------------------------
+                  # OPEN
+                  # ----------------------------------------------------
 
-          def inspect_visible_elements(page):
-              log("")
-              log("ELEMENTI VISIBILI DOPO CLICK")
-              log("----------------------------------------")
+                  page.goto(
+                      VOLOTEA_HOME,
+                      wait_until="domcontentloaded",
+                      timeout=60000,
+                  )
 
-              selectors = [
-                  "button:visible",
-                  "[role='button']:visible",
-                  "[role='option']:visible",
-                  "[role='listbox']:visible",
-                  "[role='combobox']:visible",
-                  "[aria-selected]:visible",
-                  "[data-testid]:visible",
-                  "[class*='airport' i]:visible",
-                  "[class*='autocomplete' i]:visible",
-                  "[class*='suggestion' i]:visible",
-                  "[class*='dropdown' i]:visible",
-                  "[class*='listbox' i]:visible",
-                  "[class*='modal' i]:visible",
-                  "[class*='dialog' i]:visible",
-              ]
+                  page.wait_for_timeout(10000)
 
-              seen = set()
-              total = 0
+                  log(f"URL finale: {page.url}")
+                  log(f"Titolo: {page.title()}")
 
-              for selector in selectors:
+                  # ----------------------------------------------------
+                  # COOKIE
+                  # ----------------------------------------------------
 
-                  try:
-                      locator = page.locator(selector)
-                      count = locator.count()
+                  log("")
+                  log("3. GESTIONE COOKIE")
+                  log("-" * 60)
 
-                  except Exception:
-                      continue
+                  cookie_selectors = [
+                      "button:has-text('Aceptar sólo las esenciales')",
+                      "button:has-text('Accept only necessary')",
+                      "button:has-text('Solo essenziali')",
+                  ]
 
-                  for index in range(min(count, 100)):
+                  cookie_closed = False
 
-                      element = locator.nth(index)
-
+                  for selector in cookie_selectors:
                       try:
-                          if not element.is_visible():
-                              continue
+                          locator = page.locator(selector).first
 
-                          text = (
-                              element.inner_text()
-                              .strip()
-                          )
-
-                          outer_html = (
-                              element.get_attribute(
-                                  "outerHTML"
-                              )
-                              or ""
-                          )
-
-                          key = (
-                              selector,
-                              text,
-                              outer_html[:500],
-                          )
-
-                          if key in seen:
-                              continue
-
-                          seen.add(key)
-
-                          total += 1
-
-                          log("")
-                          log(
-                              f"ELEMENTO {total}"
-                          )
-
-                          log(
-                              f"Selector: {selector}"
-                          )
-
-                          log(
-                              f"Testo: "
-                              f"{text[:1000]}"
-                          )
-
-                          log(
-                              f"HTML: "
-                              f"{outer_html[:3000]}"
-                          )
+                          if visible(locator):
+                              log(f"Cookie banner trovato: {selector}")
+                              click_force(locator)
+                              page.wait_for_timeout(1000)
+                              log("Chiusura cookie: CLICK NORMALE RIUSCITO")
+                              cookie_closed = True
+                              break
 
                       except Exception:
                           pass
 
-              log("")
-              log(
-                  f"Totale elementi diagnostici: "
-                  f"{total}"
-              )
+                  if not cookie_closed:
+                      log("Cookie banner non trovato o già chiuso")
 
+                  # ----------------------------------------------------
+                  # FORM INIZIALE
+                  # ----------------------------------------------------
 
-          # ============================================================
-          # RICERCA TESTUALE
-          # ============================================================
+                  dump_visible_inputs(
+                      page,
+                      "4. FORM PRIMA DEL CLICK"
+                  )
 
-          def search_text(page, terms):
-              log("")
-              log("RICERCA TESTUALE DOPO CLICK")
-              log("----------------------------------------")
+                  # ====================================================
+                  # PUNTO CHIAVE DEL NUOVO COMPONENTE VOLOTEA
+                  # ====================================================
 
-              for term in terms:
+                  log("")
+                  log("5. APERTURA SELETTORE AEROPORTI")
+                  log("=" * 60)
+
+                  old_origin = page.locator(
+                      "#input-text_sf-origin:visible"
+                  ).first
+
+                  old_origin.wait_for(
+                      state="visible",
+                      timeout=15000
+                  )
+
+                  log("Vecchio campo origine trovato.")
+
+                  log(
+                      "Il testo '(Canary Islands)' intercetta "
+                      "il click normale."
+                  )
+
+                  log(
+                      "Uso quindi CLICK FORZATO per aprire "
+                      "il componente aeroporti."
+                  )
+
+                  click_force(old_origin)
+
+                  log("Campo aeroporto origine: CLICK FORZATO RIUSCITO")
+
+                  # Attesa del nuovo componente.
+                  new_origin = page.locator(
+                      "#origin:visible"
+                  ).first
+
+                  new_destination = page.locator(
+                      "#destination:visible"
+                  ).first
 
                   try:
-                      locator = page.get_by_text(
-                          term,
-                          exact=False,
+                      new_origin.wait_for(
+                          state="visible",
+                          timeout=15000
                       )
 
-                      count = locator.count()
+                      new_destination.wait_for(
+                          state="visible",
+                          timeout=15000
+                      )
 
-                      visible = 0
+                      log(
+                          "Nuovo componente aeroporto: "
+                          "INPUT #origin/#destination PRESENTE"
+                      )
 
-                      for index in range(
-                          min(count, 50)
-                      ):
+                  except PlaywrightTimeoutError:
+                      log(
+                          "ERRORE: il nuovo componente "
+                          "#origin/#destination non è comparso."
+                      )
 
-                          element = locator.nth(index)
+                      page.screenshot(
+                          path="/tmp/volotea-origin-failed.png",
+                          full_page=True
+                      )
 
+                      browser.close()
+                      return []
+
+                  page.wait_for_timeout(1500)
+
+                  dump_visible_inputs(
+                      page,
+                      "6. NUOVO FORM AEROPORTI"
+                  )
+
+                  # ====================================================
+                  # ORIGINE
+                  # ====================================================
+
+                  log("")
+                  log("7. SELEZIONE ORIGINE")
+                  log("=" * 60)
+
+                  new_origin.fill("")
+                  new_origin.fill(ORIGIN)
+
+                  page.wait_for_timeout(1000)
+
+                  log(f"Ricerca aeroporto origine: {ORIGIN}")
+
+                  # Cerca un elemento che rappresenti Verona.
+                  # Non usiamo più il vecchio input.
+                  origin_candidates = page.locator(
+                      "button:visible, "
+                      "[role='button']:visible"
+                  )
+
+                  origin_found = False
+
+                  for i in range(origin_candidates.count()):
+                      candidate = origin_candidates.nth(i)
+
+                      try:
+                          text = safe_text(candidate)
+
+                          if (
+                              ORIGIN in text
+                              and (
+                                  "Verona" in text
+                                  or text.strip() == ORIGIN
+                              )
+                          ):
+                              log(
+                                  "Elemento origine trovato: "
+                                  + repr(text)
+                              )
+
+                              click_force(candidate)
+                              origin_found = True
+                              break
+
+                      except Exception:
+                          continue
+
+                  # Fallback specifico sulla struttura diagnosticata:
+                  # strong "Verona" + p.c-iata-tag__text "VRN".
+                  if not origin_found:
+                      try:
+                          iata = page.locator(
+                              "p.c-iata-tag__text:visible"
+                          ).filter(
+                              has_text=ORIGIN
+                          ).first
+
+                          if visible(iata):
+                              log("Selezione VRN tramite IATA.")
+                              click_force(iata)
+                              origin_found = True
+
+                      except Exception:
+                          pass
+
+                  if not origin_found:
+                      log(
+                          f"ERRORE: aeroporto origine {ORIGIN} "
+                          "non selezionato."
+                      )
+
+                      page.screenshot(
+                          path="/tmp/volotea-origin-selection-failed.png",
+                          full_page=True
+                      )
+
+                      browser.close()
+                      return []
+
+                  page.wait_for_timeout(1000)
+
+                  log(f"Origine selezionata: {ORIGIN}")
+
+                  # ====================================================
+                  # DESTINAZIONE
+                  # ====================================================
+
+                  log("")
+                  log("8. SELEZIONE DESTINAZIONE")
+                  log("=" * 60)
+
+                  # Dopo la selezione dell'origine il componente può
+                  # cambiare stato. Recuperiamo SEMPRE il locator.
+                  new_destination = page.locator(
+                      "#destination:visible"
+                  ).first
+
+                  new_destination.wait_for(
+                      state="visible",
+                      timeout=15000
+                  )
+
+                  new_destination.fill("")
+                  new_destination.fill(DESTINATION)
+
+                  page.wait_for_timeout(1000)
+
+                  log(f"Ricerca aeroporto destinazione: {DESTINATION}")
+
+                  destination_candidates = page.locator(
+                      "button:visible, "
+                      "[role='button']:visible"
+                  )
+
+                  destination_found = False
+
+                  for i in range(destination_candidates.count()):
+                      candidate = destination_candidates.nth(i)
+
+                      try:
+                          text = safe_text(candidate)
+
+                          if (
+                              DESTINATION in text
+                              and (
+                                  "Catania" in text
+                                  or text.strip() == DESTINATION
+                              )
+                          ):
+                              log(
+                                  "Elemento destinazione trovato: "
+                                  + repr(text)
+                              )
+
+                              click_force(candidate)
+                              destination_found = True
+                              break
+
+                      except Exception:
+                          continue
+
+                  if not destination_found:
+                      try:
+                          iata = page.locator(
+                              "p.c-iata-tag__text:visible"
+                          ).filter(
+                              has_text=DESTINATION
+                          ).first
+
+                          if visible(iata):
+                              log("Selezione CTA tramite IATA.")
+                              click_force(iata)
+                              destination_found = True
+
+                      except Exception:
+                          pass
+
+                  if not destination_found:
+                      log(
+                          f"ERRORE: aeroporto destinazione "
+                          f"{DESTINATION} non selezionato."
+                      )
+
+                      page.screenshot(
+                          path="/tmp/volotea-destination-selection-failed.png",
+                          full_page=True
+                      )
+
+                      browser.close()
+                      return []
+
+                  page.wait_for_timeout(1000)
+
+                  log(f"Destinazione selezionata: {DESTINATION}")
+
+                  # ====================================================
+                  # DATA
+                  # ====================================================
+
+                  log("")
+                  log("9. SELEZIONE DATA")
+                  log("=" * 60)
+
+                  log(f"Data richiesta: {DEPARTURE_DATE}")
+
+                  # Volotea può usare datepicker diversi a seconda
+                  # della versione del frontend.
+                  date_selected = False
+
+                  # Prima proviamo input di tipo date.
+                  date_inputs = page.locator(
+                      "input[type='date']:visible"
+                  )
+
+                  if date_inputs.count() > 0:
+                      try:
+                          date_inputs.first.fill(DEPARTURE_DATE)
+                          date_selected = True
+                          log(
+                              "Data impostata tramite input[type=date]."
+                          )
+                      except Exception:
+                          pass
+
+                  # Se non esiste un input date, cerchiamo elementi
+                  # che contengano la data.
+                  if not date_selected:
+
+                      target_date = datetime.strptime(
+                          DEPARTURE_DATE,
+                          "%Y-%m-%d"
+                      )
+
+                      # Se il datepicker non è già aperto, cerchiamo
+                      # un campo data cliccabile.
+                      date_field_selectors = [
+                          "input[placeholder*='date' i]:visible",
+                          "input[placeholder*='departure' i]:visible",
+                          "input[placeholder*='data' i]:visible",
+                          "[class*='date']:visible",
+                      ]
+
+                      for selector in date_field_selectors:
                           try:
-                              if not element.is_visible():
-                                  continue
+                              field = page.locator(selector).first
 
-                              text = (
-                                  element.inner_text()
-                                  .strip()
-                              )
-
-                              if not text:
-                                  continue
-
-                              visible += 1
-
-                              log("")
-                              log(
-                                  f"TERMINE: {term}"
-                              )
-
-                              log(
-                                  f"Visibile: "
-                                  f"{visible}"
-                              )
-
-                              log(
-                                  f"Testo: "
-                                  f"{text[:1000]}"
-                              )
-
-                              attrs = element.evaluate(
-                                  """
-                                  el => ({
-                                      tag: el.tagName,
-                                      id: el.id,
-                                      role:
-                                          el.getAttribute("role"),
-                                      aria:
-                                          el.getAttribute(
-                                              "aria-label"
-                                          ),
-                                      className:
-                                          el.className,
-                                      dataTestId:
-                                          el.getAttribute(
-                                              "data-testid"
-                                          ),
-                                      outerHTML:
-                                          el.outerHTML
-                                  })
-                                  """
-                              )
-
-                              dump_json(
-                                  "ATTRIBUTI:",
-                                  attrs,
-                                  6000,
-                              )
+                              if visible(field):
+                                  click_force(field)
+                                  page.wait_for_timeout(500)
+                                  break
 
                           except Exception:
-                              pass
+                              continue
 
+                      # Ricerca del giorno 11.
+                      day = str(target_date.day)
+
+                      day_candidates = page.locator(
+                          "button:visible, "
+                          "[role='button']:visible, "
+                          "[class*='day']:visible"
+                      )
+
+                      for i in range(day_candidates.count()):
+                          candidate = day_candidates.nth(i)
+
+                          try:
+                              text = safe_text(candidate)
+
+                              if text == day:
+                                  click_force(candidate)
+                                  date_selected = True
+                                  log(
+                                      f"Giorno {day} selezionato."
+                                  )
+                                  break
+
+                          except Exception:
+                              continue
+
+                  if not date_selected:
                       log(
-                          f"'{term}': "
-                          f"{count} elementi, "
-                          f"{visible} visibili"
+                          "ATTENZIONE: data non selezionata "
+                          "automaticamente."
                       )
 
-                  except Exception as exc:
-                      log(
-                          f"Errore ricerca '{term}': "
-                          f"{exc}"
+                      page.screenshot(
+                          path="/tmp/volotea-date-selection-failed.png",
+                          full_page=True
                       )
 
+                  # ====================================================
+                  # PASSEGGERI
+                  # ====================================================
 
-          # ============================================================
-          # DOM BODY
-          # ============================================================
+                  log("")
+                  log("10. PASSEGGERI")
+                  log("=" * 60)
 
-          def inspect_body(page):
-              log("")
-              log("BODY TEXT DOPO CLICK")
-              log("----------------------------------------")
+                  pax = page.locator(
+                      "#pax:visible"
+                  ).first
 
-              try:
-                  body = page.locator("body").inner_text()
+                  if visible(pax):
+                      try:
+                          log(
+                              "Passeggeri attuali: "
+                              + safe_text(pax)
+                          )
+                      except Exception:
+                          pass
 
-                  if len(body) > 20000:
-                      body = (
-                          body[:20000]
-                          + "\n...[TRONCATO]..."
-                      )
+                  # ====================================================
+                  # FORM FINALE
+                  # ====================================================
 
-                  log(body)
+                  log("")
+                  log("11. FORM FINALE")
+                  log("=" * 60)
 
-              except Exception as exc:
-                  log(
-                      f"Errore body text: {exc}"
-                  )
-
-
-          # ============================================================
-          # HTML SELETTORE AEROPORTO
-          # ============================================================
-
-          def inspect_origin_field(page):
-              log("")
-              log("ANALISI CAMPO ORIGINE")
-              log("----------------------------------------")
-
-              selectors = [
-                  "#input-text_sf-origin:visible",
-                  "#origin:visible",
-                  "input[name='origin']:visible",
-                  "input[placeholder='Select airport']:visible",
-              ]
-
-              for selector in selectors:
-
-                  try:
-                      locator = page.locator(
-                          selector
-                      ).first
-
-                      if locator.count() == 0:
-                          continue
-
-                      if not locator.is_visible():
-                          continue
-
-                      log(
-                          f"Campo trovato con: "
-                          f"{selector}"
-                      )
-
-                      info = locator.evaluate(
-                          """
-                          el => ({
-                              tag: el.tagName,
-                              type: el.type,
-                              id: el.id,
-                              name: el.name,
-                              value: el.value,
-                              placeholder: el.placeholder,
-                              readonly: el.readOnly,
-                              disabled: el.disabled,
-                              className: el.className,
-                              parentHTML:
-                                  el.parentElement
-                                  ? el.parentElement.outerHTML
-                                  : null,
-                              outerHTML:
-                                  el.outerHTML
-                          })
-                          """
-                      )
-
-                      dump_json(
-                          "DETTAGLI CAMPO ORIGINE:",
-                          info,
-                          15000,
-                      )
-
-                      return locator
-
-                  except Exception as exc:
-                      log(
-                          f"Errore selector "
-                          f"{selector}: {exc}"
-                      )
-
-              log(
-                  "Campo origine NON trovato."
-              )
-
-              return None
-
-
-          # ============================================================
-          # TEST CLICK PURO
-          # ============================================================
-
-          def test_origin_click(page):
-              log("")
-              log("5. TEST CLICK PURO CAMPO ORIGINE")
-              log("========================================")
-
-              field = inspect_origin_field(page)
-
-              if field is None:
-                  return False
-
-              log("")
-              log("STATO PRIMA DEL CLICK")
-              log("----------------------------------------")
-
-              try:
-                  log(
-                      f"Valore: "
-                      f"{field.input_value()}"
-                  )
-
-                  log(
-                      f"Readonly: "
-                      f"{field.get_attribute('readonly')}"
-                  )
-
-                  log(
-                      f"Disabled: "
-                      f"{field.get_attribute('disabled')}"
-                  )
-
-              except Exception:
-                  pass
-
-              # --------------------------------------------------------
-              # CLICK
-              # --------------------------------------------------------
-
-              log("")
-              log("ESECUZIONE CLICK...")
-              log("----------------------------------------")
-
-              clicked = safe_click(
-                  field,
-                  "Campo aeroporto origine",
-              )
-
-              if not clicked:
-                  log(
-                      "ERRORE: impossibile cliccare "
-                      "il campo origine."
-                  )
-
-                  return False
-
-              # --------------------------------------------------------
-              # ATTESA
-              # --------------------------------------------------------
-
-              log("")
-              log(
-                  "Attendo 2 secondi "
-                  "per apertura componente..."
-              )
-
-              page.wait_for_timeout(2000)
-
-              # --------------------------------------------------------
-              # STATO DOPO CLICK
-              # --------------------------------------------------------
-
-              log("")
-              log("STATO CAMPO DOPO CLICK")
-              log("----------------------------------------")
-
-              try:
-                  info = field.evaluate(
-                      """
-                      el => ({
-                          value: el.value,
-                          readonly: el.readOnly,
-                          disabled: el.disabled,
-                          className: el.className,
-                          outerHTML: el.outerHTML
-                      })
-                      """
-                  )
-
-                  dump_json(
-                      "CAMPO DOPO CLICK:",
-                      info,
-                      10000,
-                  )
-
-              except Exception as exc:
-                  log(
-                      f"Errore stato dopo click: "
-                      f"{exc}"
-                  )
-
-              # --------------------------------------------------------
-              # DIAGNOSTICA
-              # --------------------------------------------------------
-
-              inspect_visible_inputs(
-                  page,
-                  "INPUT DOPO CLICK",
-              )
-
-              search_text(
-                  page,
-                  [
-                      "Verona",
-                      "VRN",
-                      "Verona (VRN)",
-                      "La Palma",
-                      "Catania",
-                      "CTA",
-                  ],
-              )
-
-              inspect_visible_elements(
-                  page,
-              )
-
-              inspect_body(
-                  page,
-              )
-
-              # --------------------------------------------------------
-              # SCREENSHOT
-              # --------------------------------------------------------
-
-              try:
-                  page.screenshot(
-                      path="/tmp/volotea-after-origin-click.png",
-                      full_page=True,
+                  dump_visible_inputs(
+                      page,
+                      "Stato finale prima della ricerca"
                   )
 
                   log("")
+                  log(f"Origine prevista:      {ORIGIN}")
+                  log(f"Destinazione prevista: {DESTINATION}")
+                  log(f"Data prevista:         {DEPARTURE_DATE}")
+                  log(f"Passeggeri:             {PASSENGERS}")
+
+                  # ====================================================
+                  # SEARCH FLIGHTS
+                  # ====================================================
+
+                  log("")
+                  log("12. RICERCA VOLO")
+                  log("=" * 60)
+
+                  search_button = page.locator(
+                      "button:visible"
+                  ).filter(
+                      has_text=re.compile(
+                          r"Search flights|Cerca voli",
+                          re.I
+                      )
+                  ).first
+
+                  if not visible(search_button):
+                      log(
+                          "ERRORE: pulsante Search flights "
+                          "non trovato."
+                      )
+
+                      page.screenshot(
+                          path="/tmp/volotea-search-button-failed.png",
+                          full_page=True
+                      )
+
+                      browser.close()
+                      return []
+
+                  log("Pulsante Search flights trovato.")
+
+                  click_force(search_button)
+
+                  log("Ricerca Volotea avviata.")
+
+                  # Attesa caricamento risultati.
+                  page.wait_for_timeout(8000)
+
+                  log(f"URL dopo ricerca: {page.url}")
+
+                  page.screenshot(
+                      path="/tmp/volotea-search-result.png",
+                      full_page=True
+                  )
+
+                  # ====================================================
+                  # RISULTATI
+                  # ====================================================
+
+                  log("")
+                  log("13. ANALISI RISULTATI")
+                  log("=" * 60)
+
+                  body_text = page.locator("body").inner_text(
+                      timeout=10000
+                  )
+
+                  # Log sintetico, non tutto il DOM.
+                  lines = [
+                      line.strip()
+                      for line in body_text.splitlines()
+                      if line.strip()
+                  ]
+
+                  price_pattern = re.compile(
+                      r"(?:€\s*)?\d+(?:[.,]\d{1,2})?\s*€?"
+                  )
+
+                  prices = []
+
+                  for line in lines:
+                      if (
+                          "€" in line
+                          or "EUR" in line.upper()
+                      ):
+                          if price_pattern.search(line):
+                              prices.append(line)
+
                   log(
-                      "Screenshot salvato:"
+                      f"Possibili righe prezzo trovate: "
+                      f"{len(prices)}"
+                  )
+
+                  for price in prices[:30]:
+                      log(f"  {price}")
+
+                  # ====================================================
+                  # NETWORK SUMMARY
+                  # ====================================================
+
+                  log("")
+                  log("NETWORK SUMMARY")
+                  log("=" * 60)
+
+                  log(
+                      f"Richieste API Volotea: "
+                      f"{len(api_requests)}"
                   )
 
                   log(
-                      "/tmp/volotea-after-origin-click.png"
+                      f"Risposte API Volotea: "
+                      f"{len(api_responses)}"
                   )
 
-              except Exception as exc:
+                  for response in api_responses:
+                      log(
+                          f"{response['status']} "
+                          f"{response['url']}"
+                      )
+
+                  # ====================================================
+                  # RESULT
+                  # ====================================================
+
+                  log("")
+                  log("RISULTATO TEST")
+                  log("=" * 60)
+
                   log(
-                      f"Screenshot non disponibile: "
-                      f"{exc}"
+                      f"ORIGINE: {ORIGIN}"
                   )
 
-              return True
+                  log(
+                      f"DESTINAZIONE: {DESTINATION}"
+                  )
+
+                  log(
+                      f"DATA: {DEPARTURE_DATE}"
+                  )
+
+                  log(
+                      f"DATA SELEZIONATA: "
+                      f"{'SI' if date_selected else 'NO'}"
+                  )
+
+                  log(
+                      f"URL FINALE: {page.url}"
+                  )
+
+                  browser.close()
+
+                  return prices
 
 
           # ============================================================
@@ -685,637 +884,56 @@ jobs:
 
           def main():
 
-              # ========================================================
-              # 1. DOWNLOAD STATIONS
-              # ========================================================
+              log("Avvio scanner Flight Hunter...")
+              log("")
+
+              # --------------------------------------------------------
+              # STATIONS
+              # --------------------------------------------------------
+
+              stations = download_stations()
+
+              # --------------------------------------------------------
+              # TEST ROUTE
+              # --------------------------------------------------------
 
               log("")
-              log("1. DOWNLOAD STATIONS")
-              log("========================================")
+              log(f"## {ORIGIN} -> {DESTINATION}")
+              log("")
+              log("Enabled: True")
+              log("FlightType: Direct")
+              log("MinFlightDate: 2026-08-10")
+              log("MaxFlightDate: 2027-10-30")
+
+              log("")
+              log("## RICERCA DI TEST")
+              log("")
+              log(f"Origine:      {ORIGIN}")
+              log(f"Destinazione: {DESTINATION}")
+              log(f"Data:         {DEPARTURE_DATE}")
+              log("Tipo:         SOLO ANDATA")
+              log(f"Passeggeri:   {PASSENGERS}")
+
+              # --------------------------------------------------------
+              # VOLOTEA
+              # --------------------------------------------------------
 
               try:
-                  response = requests.get(
-                      STATIONS_URL,
-                      timeout=60,
-                      headers={
-                          "User-Agent": USER_AGENT,
-                          "Accept": "application/json",
-                          "Accept-Language":
-                              "it-IT,it;q=0.9,en;q=0.8",
-                      },
-                  )
-
-                  log(
-                      f"HTTP status: "
-                      f"{response.status_code}"
-                  )
-
-                  response.raise_for_status()
-
-                  stations = response.json()
-
+                  run_volotea_test()
               except Exception as exc:
                   log("")
-                  log(
-                      "ERRORE DOWNLOAD STATIONS"
-                  )
-
+                  log("ERRORE FATALE VOLOTEA")
+                  log("=" * 60)
                   log(repr(exc))
 
-                  return 1
-
-              if not isinstance(
-                  stations,
-                  dict,
-              ):
-                  log(
-                      "ERRORE: stations.json "
-                      "non è un dizionario."
-                  )
-
-                  return 1
-
-              log(
-                  f"Stazioni presenti: "
-                  f"{len(stations)}"
-              )
-
-              if ORIGIN not in stations:
-                  log(
-                      f"ERRORE: {ORIGIN} "
-                      "non trovato."
-                  )
-
-                  return 1
-
-              origin_data = stations[ORIGIN]
-
-              markets = (
-                  origin_data.get("Markets")
-                  or {}
-              )
-
-              log(
-                  f"Mercati {ORIGIN}: "
-                  f"{len(markets)}"
-              )
-
-              if DESTINATION not in markets:
-                  log(
-                      f"ERRORE: {DESTINATION} "
-                      "non presente nei Markets "
-                      f"di {ORIGIN}."
-                  )
-
-                  return 1
-
-              market = markets[DESTINATION]
+                  raise
 
               log("")
-              log(
-                  f"{ORIGIN} -> {DESTINATION}"
-              )
-              log("----------------------------------------")
-
-              log(
-                  f"Enabled: "
-                  f"{market.get('Enabled')}"
-              )
-
-              log(
-                  f"FlightType: "
-                  f"{market.get('FlightType')}"
-              )
-
-              log(
-                  f"MinFlightDate: "
-                  f"{market.get('MinFlightDate')}"
-              )
-
-              log(
-                  f"MaxFlightDate: "
-                  f"{market.get('MaxFlightDate')}"
-              )
-
-              if not market.get("Enabled"):
-                  log(
-                      "ERRORE: tratta non abilitata."
-                  )
-
-                  return 1
-
-              min_date = market.get(
-                  "MinFlightDate"
-              )
-
-              max_date = market.get(
-                  "MaxFlightDate"
-              )
-
-              test_date = (
-                  date.today()
-                  + timedelta(days=1)
-              )
-
-              if min_date:
-                  test_date = max(
-                      test_date,
-                      date.fromisoformat(
-                          min_date
-                      ),
-                  )
-
-              if max_date:
-
-                  max_date_obj = (
-                      date.fromisoformat(
-                          max_date
-                      )
-                  )
-
-                  if test_date > max_date_obj:
-                      log(
-                          "ERRORE: nessuna data "
-                          "valida disponibile."
-                      )
-
-                      return 1
-
-              departure_date = (
-                  test_date.isoformat()
-              )
-
-              log("")
-              log("RICERCA DI TEST")
-              log("----------------------------------------")
-
-              log(
-                  f"Origine:      {ORIGIN}"
-              )
-
-              log(
-                  f"Destinazione: {DESTINATION}"
-              )
-
-              log(
-                  f"Data:         {departure_date}"
-              )
-
-              log(
-                  "Tipo:         SOLO ANDATA"
-              )
-
-              log(
-                  "Passeggeri:   1"
-              )
-
-              # ========================================================
-              # 2. BROWSER
-              # ========================================================
-
-              log("")
-              log("2. APERTURA FRONTEND VOLOTEA")
-              log("========================================")
-
-              api_key = os.environ.get(
-                  "VOLOTEA_API_KEY",
-                  "",
-              ).strip()
-
-              if api_key:
-                  log(
-                      "VOLOTEA_API_KEY: configurata"
-                  )
-              else:
-                  log(
-                      "VOLOTEA_API_KEY: "
-                      "non configurata"
-                  )
-
-              captured_requests = []
-              captured_responses = []
-
-              with sync_playwright() as p:
-
-                  browser = p.chromium.launch(
-                      headless=True,
-                      args=[
-                          "--disable-blink-features=AutomationControlled",
-                      ],
-                  )
-
-                  context = browser.new_context(
-                      locale="it-IT",
-                      user_agent=USER_AGENT,
-                      viewport={
-                          "width": 1366,
-                          "height": 900,
-                      },
-                      extra_http_headers={
-                          "Accept-Language":
-                              "it-IT,it;q=0.9,en;q=0.8",
-                      },
-                  )
-
-                  page = context.new_page()
-
-                  # ====================================================
-                  # NETWORK REQUEST
-                  # ====================================================
-
-                  def handle_request(request):
-
-                      url = request.url
-
-                      if API_PREFIX not in url:
-                          return
-
-                      headers = request.all_headers()
-
-                      safe_headers = {}
-
-                      for key, value in headers.items():
-
-                          lower = key.lower()
-
-                          if lower in (
-                              "authorization",
-                              "x-api-key",
-                              "x-session-token",
-                              "cookie",
-                          ):
-                              safe_headers[key] = (
-                                  "[PRESENTE]"
-                              )
-
-                          else:
-                              safe_headers[key] = value
-
-                      item = {
-                          "method": request.method,
-                          "url": url,
-                          "headers": safe_headers,
-                      }
-
-                      post_data = request.post_data
-
-                      if post_data:
-
-                          try:
-                              item["post_data"] = (
-                                  json.loads(
-                                      post_data
-                                  )
-                              )
-
-                          except Exception:
-                              item["post_data"] = (
-                                  post_data[:30000]
-                              )
-
-                      captured_requests.append(
-                          item
-                      )
-
-                      log("")
-                      log(
-                          "========================================"
-                      )
-                      log(
-                          "API VOLOTEA INTERCETTATA"
-                      )
-                      log(
-                          "========================================"
-                      )
-
-                      log(
-                          f"METHOD: "
-                          f"{request.method}"
-                      )
-
-                      log(
-                          f"URL: "
-                          f"{url}"
-                      )
-
-                      dump_json(
-                          "HEADER:",
-                          safe_headers,
-                          20000,
-                      )
-
-                      if "post_data" in item:
-                          dump_json(
-                              "PAYLOAD:",
-                              item["post_data"],
-                              30000,
-                          )
-
-
-                  # ====================================================
-                  # NETWORK RESPONSE
-                  # ====================================================
-
-                  def handle_response(response):
-
-                      url = response.url
-
-                      if API_PREFIX not in url:
-                          return
-
-                      item = {
-                          "status": response.status,
-                          "url": url,
-                      }
-
-                      try:
-                          body = response.body()
-
-                          item["size"] = len(body)
-
-                          content_type = (
-                              response.headers.get(
-                                  "content-type",
-                                  "",
-                              )
-                          )
-
-                          item[
-                              "content_type"
-                          ] = content_type
-
-                          if (
-                              "json"
-                              in content_type.lower()
-                          ):
-
-                              try:
-                                  item["json"] = (
-                                      json.loads(
-                                          body
-                                      )
-                                  )
-
-                              except Exception:
-                                  pass
-
-                      except Exception as exc:
-                          item["error"] = repr(exc)
-
-                      captured_responses.append(
-                          item
-                      )
-
-                      log("")
-                      log(
-                          "========================================"
-                      )
-                      log(
-                          "RISPOSTA API VOLOTEA"
-                      )
-                      log(
-                          "========================================"
-                      )
-
-                      log(
-                          f"HTTP STATUS: "
-                          f"{response.status}"
-                      )
-
-                      log(
-                          f"URL: "
-                          f"{url}"
-                      )
-
-                      log(
-                          f"SIZE: "
-                          f"{item.get('size', 0)} bytes"
-                      )
-
-                      if "json" in item:
-                          dump_json(
-                              "RISPOSTA JSON:",
-                              item["json"],
-                              30000,
-                          )
-
-
-                  page.on(
-                      "request",
-                      handle_request,
-                  )
-
-                  page.on(
-                      "response",
-                      handle_response,
-                  )
-
-                  # ====================================================
-                  # OPEN
-                  # ====================================================
-
-                  log("")
-                  log(
-                      f"Apertura: {BOOKING_URL}"
-                  )
-
-                  try:
-
-                      page.goto(
-                          BOOKING_URL,
-                          wait_until="domcontentloaded",
-                          timeout=90000,
-                      )
-
-                  except Exception as exc:
-
-                      log("")
-                      log(
-                          "ATTENZIONE apertura "
-                          "frontend:"
-                      )
-
-                      log(repr(exc))
-
-                  log("")
-                  log(
-                      "Attesa inizializzazione "
-                      "frontend: 10 secondi"
-                  )
-
-                  page.wait_for_timeout(
-                      10000
-                  )
-
-                  log("")
-                  log(
-                      f"URL finale: "
-                      f"{page.url}"
-                  )
-
-                  log(
-                      f"Titolo: "
-                      f"{page.title()}"
-                  )
-
-                  # ====================================================
-                  # COOKIE
-                  # ====================================================
-
-                  log("")
-                  log("3. GESTIONE COOKIE")
-                  log("----------------------------------------")
-
-                  cookie_selectors = [
-                      "button:has-text('Aceptar sólo las esenciales')",
-                      "button:has-text('Accept only necessary')",
-                      "button:has-text('Accetta solo i necessari')",
-                      "button:has-text('Accept essential only')",
-                      "button[aria-label*='necessary']",
-                      "button[aria-label*='essenziali']",
-                  ]
-
-                  cookie_closed = False
-
-                  for selector in cookie_selectors:
-
-                      try:
-
-                          locator = page.locator(
-                              selector
-                          ).first
-
-                          if locator.count() == 0:
-                              continue
-
-                          if not locator.is_visible():
-                              continue
-
-                          log(
-                              f"Cookie banner trovato: "
-                              f"{selector}"
-                          )
-
-                          if safe_click(
-                              locator,
-                              "Chiusura cookie",
-                          ):
-
-                              cookie_closed = True
-
-                              page.wait_for_timeout(
-                                  1500
-                              )
-
-                              break
-
-                      except Exception:
-                          pass
-
-                  if not cookie_closed:
-                      log(
-                          "Cookie banner non rilevato "
-                          "o già chiuso."
-                      )
-
-                  # ====================================================
-                  # FORM PRIMA DEL CLICK
-                  # ====================================================
-
-                  inspect_visible_inputs(
-                      page,
-                      "4. FORM PRIMA DEL CLICK",
-                  )
-
-                  # ====================================================
-                  # TEST CLICK
-                  # ====================================================
-
-                  success = test_origin_click(
-                      page
-                  )
-
-                  # ====================================================
-                  # SCREENSHOT FINALE
-                  # ====================================================
-
-                  try:
-
-                      page.screenshot(
-                          path="/tmp/volotea-final.png",
-                          full_page=True,
-                      )
-
-                      log("")
-                      log(
-                          "Screenshot finale salvato."
-                      )
-
-                  except Exception as exc:
-
-                      log(
-                          f"Screenshot finale "
-                          f"non disponibile: {exc}"
-                      )
-
-                  # ====================================================
-                  # NETWORK SUMMARY
-                  # ====================================================
-
-                  log("")
-                  log("NETWORK SUMMARY")
-                  log("========================================")
-
-                  log(
-                      f"Richieste API Volotea: "
-                      f"{len(captured_requests)}"
-                  )
-
-                  log(
-                      f"Risposte API Volotea: "
-                      f"{len(captured_responses)}"
-                  )
-
-                  # ====================================================
-                  # RISULTATO
-                  # ====================================================
-
-                  log("")
-                  log("RISULTATO TEST")
-                  log("========================================")
-
-                  if success:
-
-                      log(
-                          "CLICK SUL CAMPO ORIGINE "
-                          "ESEGUITO."
-                      )
-
-                      log(
-                          "Analisi del DOM completata."
-                      )
-
-                  else:
-
-                      log(
-                          "ERRORE: impossibile "
-                          "eseguire il test del campo."
-                      )
-
-                  browser.close()
-
-              log("")
-              log("========================================")
-              log("TEST DIAGNOSTICO COMPLETATO")
-              log("========================================")
-
-              # Questo test non deve fallire soltanto
-              # perché il dropdown non è stato trovato.
-              return 0
+              log("Scanner terminato.")
 
 
           if __name__ == "__main__":
-              sys.exit(main())
-          PYTHON
+              main()
+          PY
 
-          python /tmp/test_volotea.py
+          python scanner.py
