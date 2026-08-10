@@ -1,6 +1,6 @@
-"""Scanner Volotea basato sulle API pubbliche utilizzate dal sito."""
+"""Scanner Volotea basato sulle API utilizzate dal booking engine."""
 
-from datetime import date, timedelta, datetime
+from datetime import date, datetime, timedelta
 
 from config.settings import settings
 from connectors.base import BaseConnector
@@ -33,38 +33,76 @@ def estrai_ora(data_ora: str):
         return None
 
 
-def calcola_durata(
-    partenza: str,
-    arrivo: str
-):
-    """Calcola la durata del volo in minuti."""
-    if not partenza or not arrivo:
+def calcola_durata(data_ora: str):
+    """Converte una durata HH:MM:SS in minuti."""
+    if not data_ora:
         return None
 
     try:
-        p = datetime.fromisoformat(
-            partenza.replace("Z", "+00:00")
-        )
+        parti = data_ora.split(":")
 
-        a = datetime.fromisoformat(
-            arrivo.replace("Z", "+00:00")
-        )
+        ore = int(parti[0])
+        minuti = int(parti[1])
 
-        return int(
-            (a - p).total_seconds() / 60
-        )
+        return ore * 60 + minuti
 
     except Exception:
         return None
 
 
-def primo_valore(*valori):
-    """Restituisce il primo valore non vuoto."""
-    for valore in valori:
-        if valore is not None and valore != "":
-            return valore
+def primo_valore_fare(fares):
+    """
+    Restituisce il prezzo EUR più basso trovato
+    nelle tariffe disponibili.
+    """
 
-    return None
+    prezzi = []
+
+    for fare in fares or []:
+
+        for passenger in fare.get(
+            "passengerFares",
+            []
+        ):
+
+            if passenger.get(
+                "passengerType"
+            ) != "ADT":
+
+                continue
+
+            fare_amount = (
+                passenger.get(
+                    "fareAmount"
+                )
+                or {}
+            )
+
+            prezzo = (
+                fare_amount.get(
+                    "eurAmount"
+                )
+                or fare_amount.get(
+                    "amount"
+                )
+            )
+
+            if prezzo is None:
+                continue
+
+            try:
+                prezzo = float(prezzo)
+
+                if prezzo > 0:
+                    prezzi.append(prezzo)
+
+            except (TypeError, ValueError):
+                continue
+
+    if not prezzi:
+        return None
+
+    return min(prezzi)
 
 
 class VoloteaScanner(BaseScanner):
@@ -76,17 +114,20 @@ class VoloteaScanner(BaseScanner):
 
         super().__init__(
             connector=BaseConnector(
-                nome="volotea"
+                nome="volotea",
+                timeout=settings.timeout,
             )
         )
 
+    def carica_stations(self):
+        """
+        Scarica ogni volta la configurazione aggiornata
+        delle stazioni Volotea.
 
-    def _carica_stazioni(self):
-
-        print(
-            "Download configurazione dinamica "
-            "stazioni Volotea..."
-        )
+        In questo modo le rotte non sono hardcoded:
+        se Volotea aggiunge o rimuove una rotta,
+        Flight Hunter la vede automaticamente.
+        """
 
         dati = self.connector.get_json(
             STATIONS_URL
@@ -95,152 +136,128 @@ class VoloteaScanner(BaseScanner):
         if not isinstance(dati, dict):
 
             print(
-                "ERRORE: stations.json non contiene "
-                "un dizionario."
+                "[volotea] stations.json "
+                "non valido"
             )
 
             return {}
 
         print(
-            f"Stazioni Volotea ricevute: {len(dati)}"
+            f"[volotea] stazioni caricate: "
+            f"{len(dati)}"
         )
 
         return dati
 
+    def estrai_rotte(self, stations):
+        """
+        Costruisce dinamicamente le rotte dalle
+        informazioni Markets di stations.json.
+        """
 
-    def _trova_market(
-        self,
-        stazione,
-        destinazione
-    ):
+        rotte = []
 
-        markets = (
-            stazione.get("Markets")
-            or {}
-        )
+        for origine in self.origini:
 
-        market = markets.get(
-            destinazione
-        )
+            stazione = stations.get(
+                origine
+            )
 
-        if not isinstance(market, dict):
-            return None
+            if not isinstance(
+                stazione,
+                dict
+            ):
 
-        if not market.get("Enabled", False):
-            return None
+                print(
+                    f"[volotea] origine "
+                    f"{origine} non trovata"
+                )
 
-        if (
-            market.get("FlightType")
-            and market.get("FlightType")
-            != "Direct"
-        ):
-            return None
+                continue
 
-        return market
+            markets = stazione.get(
+                "Markets"
+            ) or {}
 
+            for destinazione, market in markets.items():
 
-    def _nome_destinazione(
-        self,
-        dati_stazione,
-        codice
-    ):
+                if not isinstance(
+                    market,
+                    dict
+                ):
+                    continue
 
-        market = (
-            dati_stazione
-            .get("Markets", {})
-            .get(codice)
-            or {}
-        )
+                if not market.get(
+                    "Enabled",
+                    False
+                ):
+                    continue
 
-        # stations.json può contenere
-        # informazioni localizzate sulla destinazione
-        # in altre strutture. Se non disponibili,
-        # utilizziamo il codice IATA come fallback.
+                if market.get(
+                    "FlightType"
+                ) not in (
+                    None,
+                    "Direct"
+                ):
+                    continue
 
-        return (
-            market.get("Name")
-            or market.get("City")
-            or codice
-        )
+                min_date = market.get(
+                    "MinFlightDate"
+                )
 
+                max_date = market.get(
+                    "MaxFlightDate"
+                )
 
-    def _costruisci_criteria(
+                rotte.append(
+                    {
+                        "origine": origine,
+                        "destinazione": destinazione,
+                        "min_date": min_date,
+                        "max_date": max_date,
+                    }
+                )
+
+        return rotte
+
+    def costruisci_criteria(
         self,
         origine,
         destinazione,
         data_partenza,
-        market
     ):
+        """
+        Costruisce il criterio compatibile con
+        il payload reale dell'API Volotea.
+        """
 
-        min_date = market.get(
-            "MinFlightDate"
-        )
-
-        max_date = market.get(
-            "MaxFlightDate"
-        )
-
-        if min_date:
-            try:
-                minimo = date.fromisoformat(
-                    min_date
-                )
-
-                if data_partenza < minimo:
-                    return None
-
-            except ValueError:
-                pass
-
-        if max_date:
-            try:
-                massimo = date.fromisoformat(
-                    max_date
-                )
-
-                if data_partenza > massimo:
-                    return None
-
-            except ValueError:
-                pass
-
-        # Finestra volutamente molto piccola:
-        # il Search API restituisce i voli relativi
-        # alla data selezionata.
-        #
-        # beginDate/endDate vengono mantenuti
-        # ravvicinati per evitare richieste enormi.
+        data_str = data_partenza.isoformat()
 
         return {
-            "beginDate": data_partenza.isoformat(),
-            "endDate": data_partenza.isoformat(),
-            "selectedDate": data_partenza.isoformat(),
+            "beginDate": data_str,
+            "endDate": data_str,
+            "selectedDate": data_str,
             "origin": origine,
             "destination": destinazione,
         }
 
-
-    def _cerca_voli(
+    def cerca_voli(
         self,
         origine,
         destinazione,
         data_partenza,
-        market
     ):
+        """
+        Esegue una ricerca reale sul Search API Volotea.
+        """
 
-        criteria = self._costruisci_criteria(
+        criterio = self.costruisci_criteria(
             origine,
             destinazione,
             data_partenza,
-            market
         )
 
-        if not criteria:
-            return {}
-
         payload = {
-            "abTastyExperiments": [],
-
             "codes": {
                 "currency": settings.valuta,
                 "promotionCode": "",
@@ -249,7 +266,7 @@ class VoloteaScanner(BaseScanner):
             },
 
             "criteria": [
-                criteria
+                criterio
             ],
 
             "fareTypesToRequest": [
@@ -266,423 +283,340 @@ class VoloteaScanner(BaseScanner):
             ],
         }
 
-        return self.connector.post_json(
-            SEARCH_URL,
-            json=payload,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "Origin": "https://www.volotea.com",
-                "Referer": "https://www.volotea.com/",
-            }
-        ) or {}
+        try:
 
+            response = (
+                self.connector.session.post(
+                    SEARCH_URL,
+                    json=payload,
+                    timeout=settings.timeout,
+                )
+            )
 
-    def _estrai_offerte(
+            if (
+                response.status_code == 429
+                or response.status_code >= 500
+            ):
+
+                print(
+                    f"[volotea] HTTP "
+                    f"{response.status_code} "
+                    f"{origine}-{destinazione} "
+                    f"{data_partenza}"
+                )
+
+                return None
+
+            response.raise_for_status()
+
+            return response.json()
+
+        except Exception as exc:
+
+            print(
+                f"[volotea] ricerca fallita "
+                f"{origine}-{destinazione} "
+                f"{data_partenza}: {exc}"
+            )
+
+            return None
+
+    def estrai_offerte(
         self,
         dati,
         origine,
         destinazione,
-        data_partenza
+        data_partenza,
     ):
 
         offerte = []
 
-        if not isinstance(dati, dict):
+        if not isinstance(
+            dati,
+            dict
+        ):
             return offerte
 
-        # Il formato può contenere strutture annidate.
-        # Cerchiamo ricorsivamente gli oggetti che
-        # rappresentano una tariffa.
+        """
+        La risposta può contenere strutture annidate.
+        Cerchiamo ricorsivamente gli oggetti che
+        rappresentano un volo.
+        """
 
         def visita(obj):
 
             if isinstance(obj, dict):
 
-                # Individuazione di un oggetto tariffa
-                # tramite passengerFares.
-                if isinstance(
-                    obj.get("passengerFares"),
-                    list
+                if (
+                    "fares" in obj
+                    and "designator" in obj
                 ):
 
-                    self._aggiungi_tariffa(
-                        offerte,
-                        obj,
-                        origine,
-                        destinazione,
-                        data_partenza
-                    )
+                    aggiungi_volo(obj)
 
-                for valore in obj.values():
-                    visita(valore)
+                for value in obj.values():
+                    visita(value)
 
             elif isinstance(obj, list):
 
-                for valore in obj:
-                    visita(valore)
+                for value in obj:
+                    visita(value)
+
+        def aggiungi_volo(volo):
+
+            designator = (
+                volo.get(
+                    "designator"
+                )
+                or {}
+            )
+
+            origine_volo = (
+                designator.get(
+                    "origin"
+                )
+                or origine
+            )
+
+            destinazione_volo = (
+                designator.get(
+                    "destination"
+                )
+                or destinazione
+            )
+
+            partenza_iso = (
+                designator.get(
+                    "departure"
+                )
+            )
+
+            arrivo_iso = (
+                designator.get(
+                    "arrival"
+                )
+            )
+
+            if not partenza_iso:
+                return
+
+            prezzo = primo_valore_fare(
+                volo.get(
+                    "fares"
+                )
+            )
+
+            if prezzo is None:
+                return
+
+            data_str = (
+                partenza_iso[:10]
+            )
+
+            durata = calcola_durata(
+                volo.get(
+                    "flightDuration"
+                )
+            )
+
+            numero_volo = None
+
+            segments = (
+                volo.get(
+                    "segments"
+                )
+                or []
+            )
+
+            if segments:
+
+                identifier = (
+                    segments[0].get(
+                        "identifier"
+                    )
+                    or {}
+                )
+
+                numero_volo = (
+                    identifier.get(
+                        "identifier"
+                    )
+                )
+
+            if (
+                prezzo <= settings.prezzo_massimo
+            ):
+
+                offerte.append(
+
+                    Offerta(
+
+                        aeroporto_partenza=(
+                            origine_volo
+                        ),
+
+                        aeroporto_arrivo=(
+                            destinazione_volo
+                        ),
+
+                        destinazione=(
+                            destinazione_volo
+                        ),
+
+                        compagnia=self.compagnia,
+
+                        prezzo=prezzo,
+
+                        valuta=settings.valuta,
+
+                        data_partenza=data_str,
+
+                        ora_partenza=(
+                            estrai_ora(
+                                partenza_iso
+                            )
+                        ),
+
+                        ora_arrivo=(
+                            estrai_ora(
+                                arrivo_iso
+                            )
+                        ),
+
+                        durata_andata=durata,
+
+                        link_prenotazione=(
+                            BOOKING_URL
+                        ),
+
+                        fonte_dato=(
+                            settings.fonte_dato
+                        ),
+                    )
+                )
+
+                print(
+                    "[volotea] OFFERTA: "
+                    f"{origine_volo} -> "
+                    f"{destinazione_volo} | "
+                    f"{data_str} | "
+                    f"{prezzo:.2f} EUR"
+                    + (
+                        f" | volo {numero_volo}"
+                        if numero_volo
+                        else ""
+                    )
+                )
 
         visita(dati)
 
         return offerte
 
-
-    def _aggiungi_tariffa(
-        self,
-        offerte,
-        tariffa,
-        origine,
-        destinazione,
-        data_partenza
-    ):
-
-        passenger_fares = (
-            tariffa.get("passengerFares")
-            or []
-        )
-
-        for passenger_fare in passenger_fares:
-
-            if (
-                passenger_fare.get(
-                    "passengerType"
-                )
-                != "ADT"
-            ):
-                continue
-
-            fare_amount = (
-                passenger_fare.get(
-                    "fareAmount"
-                )
-                or {}
-            )
-
-            prezzo = primo_valore(
-                fare_amount.get("eurAmount"),
-                fare_amount.get("amount")
-            )
-
-            if prezzo is None:
-                continue
-
-            try:
-                prezzo = float(prezzo)
-
-            except (TypeError, ValueError):
-                continue
-
-            if prezzo <= 0:
-                continue
-
-            # Cerchiamo le informazioni del volo
-            # risalendo dalla struttura della tariffa.
-
-            designator = (
-                tariffa.get("designator")
-                or {}
-            )
-
-            leg_info = (
-                tariffa.get("legInfo")
-                or {}
-            )
-
-            # In alcuni risultati il designator/legInfo
-            # si trova in strutture superiori.
-            # Per questo conserviamo comunque
-            # origine/destinazione/date della ricerca.
-
-            aeroporto_arrivo = (
-                designator.get("destination")
-                or destinazione
-            )
-
-            aeroporto_partenza = (
-                designator.get("origin")
-                or origine
-            )
-
-            departure = (
-                designator.get("departure")
-                or leg_info.get("departureTime")
-            )
-
-            arrival = (
-                designator.get("arrival")
-                or leg_info.get("arrivalTime")
-            )
-
-            data_effettiva = (
-                departure[:10]
-                if departure
-                else data_partenza.isoformat()
-            )
-
-            durata = calcola_durata(
-                departure,
-                arrival
-            )
-
-            destinazione_nome = (
-                aeroporto_arrivo
-            )
-
-            link = (
-                f"{BOOKING_URL}"
-                f"?origin={aeroporto_partenza}"
-                f"&destination={aeroporto_arrivo}"
-                f"&date={data_effettiva}"
-            )
-
-            offerte.append(
-                Offerta(
-                    aeroporto_partenza=
-                        aeroporto_partenza,
-
-                    aeroporto_arrivo=
-                        aeroporto_arrivo,
-
-                    destinazione=
-                        destinazione_nome,
-
-                    compagnia=
-                        self.compagnia,
-
-                    prezzo=
-                        prezzo,
-
-                    valuta=
-                        settings.valuta,
-
-                    data_partenza=
-                        data_effettiva,
-
-                    ora_partenza=
-                        estrai_ora(
-                            departure
-                        ),
-
-                    ora_arrivo=
-                        estrai_ora(
-                            arrival
-                        ),
-
-                    durata_andata=
-                        durata,
-
-                    link_prenotazione=
-                        link,
-
-                    fonte_dato=
-                        settings.fonte_dato,
-                )
-            )
-
-
-    def scan(self) -> list:
+    def scan(self):
 
         oggi = date.today()
 
-        data_inizio = (
-            oggi + timedelta(days=1)
-        )
-
-        data_fine = (
+        data_massima = (
             oggi
             + timedelta(
                 days=settings.giorni_anticipo_max
             )
         )
 
-        offerte = []
+        print(
+            "[volotea] caricamento "
+            "rotte dinamiche..."
+        )
 
         stations = (
-            self._carica_stazioni()
+            self.carica_stations()
         )
 
         if not stations:
-            return offerte
+            return []
 
+        rotte = self.estrai_rotte(
+            stations
+        )
 
-        for origine in self.origini:
+        print(
+            f"[volotea] rotte trovate: "
+            f"{len(rotte)}"
+        )
 
-            print("")
-            print(
-                f"[volotea] origine: {origine}"
+        offerte = []
+
+        for rotta in rotte:
+
+            origine = rotta[
+                "origine"
+            ]
+
+            destinazione = rotta[
+                "destinazione"
+            ]
+
+            min_date = rotta.get(
+                "min_date"
             )
 
-            stazione = stations.get(
-                origine
+            max_date = rotta.get(
+                "max_date"
             )
 
-            if not isinstance(
-                stazione,
-                dict
-            ):
+            try:
 
-                print(
-                    f"[volotea] {origine}: "
-                    "stazione non trovata"
+                inizio = max(
+                    oggi + timedelta(days=1),
+                    date.fromisoformat(
+                        min_date
+                    )
+                    if min_date
+                    else oggi
+                    + timedelta(days=1)
                 )
+
+                fine = min(
+                    data_massima,
+                    date.fromisoformat(
+                        max_date
+                    )
+                    if max_date
+                    else data_massima
+                )
+
+            except ValueError:
 
                 continue
 
-            if not stazione.get(
-                "Enabled",
-                False
-            ):
-
-                print(
-                    f"[volotea] {origine}: "
-                    "stazione disabilitata"
-                )
-
+            if inizio > fine:
                 continue
 
+            giorno = inizio
 
-            markets = (
-                stazione.get("Markets")
-                or {}
-            )
+            while giorno <= fine:
 
-            destinazioni = []
-
-            for codice, market in markets.items():
-
-                if not isinstance(
-                    market,
-                    dict
-                ):
-                    continue
-
-                if not market.get(
-                    "Enabled",
-                    False
-                ):
-                    continue
-
-                if (
-                    market.get("FlightType")
-                    and market.get("FlightType")
-                    != "Direct"
-                ):
-                    continue
-
-                destinazioni.append(
-                    (
-                        codice,
-                        market
-                    )
+                dati = self.cerca_voli(
+                    origine,
+                    destinazione,
+                    giorno,
                 )
 
+                if dati:
 
-            print(
-                f"[volotea] {origine}: "
-                f"{len(destinazioni)} rotte attive"
-            )
-
-
-            for destinazione, market in destinazioni:
-
-                min_date = market.get(
-                    "MinFlightDate"
-                )
-
-                max_date = market.get(
-                    "MaxFlightDate"
-                )
-
-
-                da = data_inizio
-                a = data_fine
-
-
-                if min_date:
-
-                    try:
-                        da = max(
-                            da,
-                            date.fromisoformat(
-                                min_date
-                            )
-                        )
-
-                    except ValueError:
-                        pass
-
-
-                if max_date:
-
-                    try:
-                        a = min(
-                            a,
-                            date.fromisoformat(
-                                max_date
-                            )
-                        )
-
-                    except ValueError:
-                        pass
-
-
-                if da > a:
-                    continue
-
-
-                # IMPORTANTE:
-                # non interroghiamo inutilmente tutte le date
-                # se il market non è operativo.
-                #
-                # Per ora analizziamo ogni data valida.
-                # Il limite FH_GIORNI_MAX controlla la finestra.
-
-                corrente = da
-
-                while corrente <= a:
-
-                    print(
-                        f"[volotea] "
-                        f"{origine}->{destinazione} "
-                        f"{corrente.isoformat()}"
-                    )
-
-                    try:
-
-                        dati = self._cerca_voli(
+                    offerte.extend(
+                        self.estrai_offerte(
+                            dati,
                             origine,
                             destinazione,
-                            corrente,
-                            market
+                            giorno,
                         )
-
-                        nuove = (
-                            self._estrai_offerte(
-                                dati,
-                                origine,
-                                destinazione,
-                                corrente
-                            )
-                        )
-
-                        offerte.extend(
-                            nuove
-                        )
-
-                    except Exception as exc:
-
-                        print(
-                            f"[volotea] ERRORE "
-                            f"{origine}->{destinazione} "
-                            f"{corrente}: {exc}"
-                        )
-
-                    corrente += timedelta(
-                        days=1
                     )
 
+                giorno += timedelta(
+                    days=1
+                )
 
-        print("")
         print(
             f"[volotea] offerte trovate: "
             f"{len(offerte)}"
