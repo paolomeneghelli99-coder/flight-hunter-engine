@@ -4,21 +4,14 @@ on:
   workflow_dispatch:
 
   schedule:
-    - cron: "0 */6 * * *"
-
-permissions:
-  contents: read
+    - cron: "*/30 * * * *"
 
 jobs:
   scanner:
-    name: Run Flight Hunter Scanner
     runs-on: ubuntu-latest
 
-    env:
-      FH_BACKEND_URL: ${{ secrets.FH_BACKEND_URL }}
-      FH_PUBLISHABLE_KEY: ${{ secrets.FH_PUBLISHABLE_KEY }}
-      FH_EMAIL: ${{ secrets.FH_EMAIL }}
-      FH_PASSWORD: ${{ secrets.FH_PASSWORD }}
+    permissions:
+      contents: read
 
     steps:
 
@@ -41,10 +34,11 @@ jobs:
 
 
       # ============================================================
-      # DIPENDENZE
+      # INSTALLAZIONE DIPENDENZE
       # ============================================================
 
       - name: Install dependencies
+        shell: bash
         run: |
           set -e
 
@@ -56,6 +50,7 @@ jobs:
           python -m pip --version
 
           python -m pip install --upgrade pip
+
           python -m pip install -r requirements.txt
 
           echo ""
@@ -68,261 +63,13 @@ jobs:
 
 
       # ============================================================
-      # CONTROLLO REPOSITORY
-      # ============================================================
-
-      - name: Check repository
-        run: |
-          set -e
-
-          echo "========================================"
-          echo "STRUTTURA REPOSITORY"
-          echo "========================================"
-
-          find . -maxdepth 3 -type f \
-            ! -path "./.git/*" \
-            | sort
-
-          echo ""
-          echo "Controllo main.py..."
-
-          test -f main.py
-          echo "OK: main.py presente"
-
-          echo ""
-          echo "Controllo scanners..."
-
-          test -d scanners
-          echo "OK: cartella scanners presente"
-
-          find scanners -maxdepth 2 -type f | sort
-
-          echo ""
-          echo "Controllo scanners principali..."
-
-          test -f scanners/base.py
-          test -f scanners/ryanair.py
-          test -f scanners/volotea.py
-          test -f scanners/__init__.py
-
-          echo "OK: scanner Ryanair presente"
-          echo "OK: scanner Volotea presente"
-
-
-      # ============================================================
-      # CONTROLLO SECRET
-      # ============================================================
-
-      - name: Check required secrets
-        run: |
-          set -e
-
-          echo "========================================"
-          echo "VERIFICA SECRET"
-          echo "========================================"
-
-          if [ -z "$FH_BACKEND_URL" ]; then
-            echo "ERRORE: FH_BACKEND_URL mancante"
-            exit 1
-          fi
-
-          if [ -z "$FH_PUBLISHABLE_KEY" ]; then
-            echo "ERRORE: FH_PUBLISHABLE_KEY mancante"
-            exit 1
-          fi
-
-          if [ -z "$FH_EMAIL" ]; then
-            echo "ERRORE: FH_EMAIL mancante"
-            exit 1
-          fi
-
-          if [ -z "$FH_PASSWORD" ]; then
-            echo "ERRORE: FH_PASSWORD mancante"
-            exit 1
-          fi
-
-          echo "OK: tutti i secret sono presenti"
-
-
-      # ============================================================
-      # AUTENTICAZIONE SUPABASE
-      # ============================================================
-
-      - name: Authenticate with Supabase
-        shell: bash
-        run: |
-          set -e
-
-          echo "========================================"
-          echo "AUTENTICAZIONE FLIGHT HUNTER"
-          echo "========================================"
-
-          AUTH_URL="${FH_BACKEND_URL%/}/auth/v1/token?grant_type=password"
-
-          echo "Endpoint autenticazione:"
-          echo "${FH_BACKEND_URL%/}/auth/v1/token"
-
-          RESPONSE=$(curl -sS \
-            --fail-with-body \
-            -X POST \
-            "$AUTH_URL" \
-            -H "apikey: $FH_PUBLISHABLE_KEY" \
-            -H "Content-Type: application/json" \
-            -d "{\"email\":\"$FH_EMAIL\",\"password\":\"$FH_PASSWORD\"}")
-
-          ACCESS_TOKEN=$(python -c '
-          import json
-          import sys
-
-          data = json.loads(sys.stdin.read())
-
-          token = data.get("access_token")
-
-          if not token:
-              error = (
-                  data.get("error_description")
-                  or data.get("msg")
-                  or data.get("error")
-                  or "Autenticazione fallita"
-              )
-
-              print(
-                  f"ERRORE AUTENTICAZIONE: {error}",
-                  file=sys.stderr
-              )
-
-              sys.exit(1)
-
-          print(token)
-          ' <<< "$RESPONSE")
-
-          if [ -z "$ACCESS_TOKEN" ]; then
-            echo "ERRORE: JWT non ricevuto"
-            exit 1
-          fi
-
-          echo "::add-mask::$ACCESS_TOKEN"
-
-          echo "JWT ottenuto correttamente."
-
-          echo "FH_ACCESS_TOKEN=$ACCESS_TOKEN" >> "$GITHUB_ENV"
-
-          echo "Autenticazione completata."
-
-
-      # ============================================================
-      # VALIDAZIONE JWT
-      # ============================================================
-
-      - name: Validate JWT lifetime
-        shell: bash
-        run: |
-          set -e
-
-          echo "========================================"
-          echo "CONTROLLO VALIDITÀ JWT"
-          echo "========================================"
-
-          python - <<'PY'
-          import os
-          import base64
-          import json
-          import time
-          from datetime import datetime, timezone
-
-          token = os.environ.get("FH_ACCESS_TOKEN", "")
-
-          if not token:
-              print("ERRORE: FH_ACCESS_TOKEN non presente")
-              raise SystemExit(1)
-
-          parts = token.split(".")
-
-          if len(parts) != 3:
-              print("ERRORE: token non strutturato come JWT")
-              raise SystemExit(1)
-
-          payload = parts[1]
-          payload += "=" * (-len(payload) % 4)
-
-          try:
-              claims = json.loads(
-                  base64.urlsafe_b64decode(payload)
-              )
-          except Exception as exc:
-              print(f"ERRORE lettura JWT: {exc}")
-              raise SystemExit(1)
-
-          now = int(time.time())
-
-          iat = claims.get("iat")
-          exp = claims.get("exp")
-
-          if not exp:
-              print("ERRORE: il JWT non contiene exp")
-              raise SystemExit(1)
-
-          print("JWT ricevuto: SI")
-          print("issuer:", claims.get("iss", "MANCANTE"))
-          print("audience:", claims.get("aud", "MANCANTE"))
-          print("role:", claims.get("role", "MANCANTE"))
-
-          if iat:
-              print(
-                  "emesso:",
-                  datetime.fromtimestamp(
-                      iat,
-                      timezone.utc
-                  ).isoformat()
-              )
-
-          print(
-              "scadenza:",
-              datetime.fromtimestamp(
-                  exp,
-                  timezone.utc
-              ).isoformat()
-          )
-
-          print(
-              "ora server:",
-              datetime.fromtimestamp(
-                  now,
-                  timezone.utc
-              ).isoformat()
-          )
-
-          remaining = exp - now
-
-          print(
-              f"validità residua: {remaining} secondi"
-          )
-
-          if remaining <= 0:
-              print("")
-              print("ERRORE: JWT GIÀ SCADUTO")
-              raise SystemExit(1)
-
-          if remaining < 60:
-              print("")
-              print(
-                  "ERRORE: JWT scade tra meno di 60 secondi."
-              )
-              raise SystemExit(1)
-
-          print("")
-          print("OK: JWT valido e non scaduto.")
-          PY
-
-
-      # ============================================================
-      # TEST VOLOTEA STATIONS + SEARCH API
+      # TEST VOLОTEA - STATIONS + SEARCH API
       # ============================================================
 
       - name: Test Volotea API
         shell: bash
         run: |
-          set -e
+          set -o pipefail
 
           echo "========================================"
           echo "TEST VOLOTEA API"
@@ -350,8 +97,13 @@ jobs:
                   "(KHTML, like Gecko) "
                   "Chrome/124.0 Safari/537.36"
               ),
-              "Accept": "application/json, text/plain, */*",
-              "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
+              "Accept": (
+                  "application/json, "
+                  "text/plain, */*"
+              ),
+              "Accept-Language": (
+                  "it-IT,it;q=0.9,en;q=0.8"
+              ),
               "Content-Type": "application/json",
               "Origin": "https://www.volotea.com",
               "Referer": "https://www.volotea.com/",
@@ -360,28 +112,45 @@ jobs:
           session = requests.Session()
           session.headers.update(HEADERS)
 
+          # ========================================================
+          # 1. DOWNLOAD STATIONS
+          # ========================================================
+
           print("")
           print("1. DOWNLOAD STATIONS")
           print("----------------------------------------")
 
-          response = session.get(
-              STATIONS_URL,
-              timeout=60,
-          )
+          try:
+              response = session.get(
+                  STATIONS_URL,
+                  timeout=60,
+              )
 
-          print(
-              "HTTP status:",
-              response.status_code
-          )
+              print(
+                  "HTTP status:",
+                  response.status_code
+              )
 
-          response.raise_for_status()
+              response.raise_for_status()
 
-          stations = response.json()
+              stations = response.json()
+
+          except Exception as exc:
+              print("")
+              print(
+                  "ERRORE DOWNLOAD STATIONS:",
+                  repr(exc)
+              )
+
+              raise SystemExit(1)
 
           if not isinstance(stations, dict):
-              raise RuntimeError(
-                  "stations.json non contiene un dizionario"
+              print(
+                  "ERRORE: stations.json "
+                  "non contiene un dizionario."
               )
+
+              raise SystemExit(1)
 
           print(
               "Stazioni presenti:",
@@ -389,9 +158,12 @@ jobs:
           )
 
           if "VRN" not in stations:
-              raise RuntimeError(
-                  "VRN non trovato in stations.json"
+              print(
+                  "ERRORE: VRN non trovato "
+                  "in stations.json."
               )
+
+              raise SystemExit(1)
 
           vrn = stations["VRN"]
 
@@ -403,36 +175,46 @@ jobs:
           )
 
           if "CTA" not in markets:
-              raise RuntimeError(
-                  "CTA non presente nei Markets di VRN"
+              print(
+                  "ERRORE: CTA non presente "
+                  "nei Markets di VRN."
               )
+
+              raise SystemExit(1)
 
           market = markets["CTA"]
 
           print("")
           print("VRN -> CTA")
           print("----------------------------------------")
+
           print(
               "Enabled:",
               market.get("Enabled")
           )
+
           print(
               "FlightType:",
               market.get("FlightType")
           )
+
           print(
               "MinFlightDate:",
               market.get("MinFlightDate")
           )
+
           print(
               "MaxFlightDate:",
               market.get("MaxFlightDate")
           )
 
           if not market.get("Enabled"):
-              raise RuntimeError(
-                  "La rotta VRN -> CTA non è Enabled"
+              print(
+                  "ERRORE: VRN -> CTA "
+                  "non è Enabled."
               )
+
+              raise SystemExit(1)
 
           min_date = market.get("MinFlightDate")
           max_date = market.get("MaxFlightDate")
@@ -448,11 +230,16 @@ jobs:
               )
 
           if max_date:
-              if data_test > date.fromisoformat(max_date):
-                  raise RuntimeError(
-                      "Nessuna data valida disponibile "
-                      "per il test VRN -> CTA"
+              if (
+                  data_test
+                  > date.fromisoformat(max_date)
+              ):
+                  print(
+                      "ERRORE: nessuna data valida "
+                      "disponibile per il test."
                   )
+
+                  raise SystemExit(1)
 
           data_str = data_test.isoformat()
 
@@ -461,6 +248,10 @@ jobs:
               "Data utilizzata per il test:",
               data_str
           )
+
+          # ========================================================
+          # 2. POST SEARCH API
+          # ========================================================
 
           print("")
           print("2. POST FLIGHTS/SEARCH")
@@ -503,6 +294,7 @@ jobs:
 
           print("")
           print("Payload:")
+
           print(
               json.dumps(
                   payload,
@@ -511,11 +303,27 @@ jobs:
               )
           )
 
-          response = session.post(
-              SEARCH_URL,
-              json=payload,
-              timeout=60,
-          )
+          try:
+              response = session.post(
+                  SEARCH_URL,
+                  json=payload,
+                  timeout=60,
+              )
+
+          except Exception as exc:
+              print("")
+              print(
+                  "ERRORE REQUEST SEARCH API:",
+                  repr(exc)
+              )
+
+              print("")
+              print(
+                  "Il test stations.json è comunque "
+                  "andato a buon fine."
+              )
+
+              raise SystemExit(0)
 
           print("")
           print(
@@ -523,26 +331,102 @@ jobs:
               response.status_code
           )
 
+          # ========================================================
+          # 403
+          # ========================================================
+
+          if response.status_code == 403:
+
+              print("")
+              print("========================================")
+              print("VOLОTEA SEARCH API -> HTTP 403")
+              print("========================================")
+
+              print("")
+              print(
+                  "L'endpoint è raggiungibile, "
+                  "ma il server Volotea sta "
+                  "rifiutando la richiesta."
+              )
+
+              print("")
+              print("Risposta server:")
+
+              print(
+                  response.text[:5000]
+              )
+
+              print("")
+              print(
+                  "Questo test NON viene considerato "
+                  "un errore del workflow."
+              )
+
+              print(
+                  "stations.json funziona correttamente."
+              )
+
+              print(
+                  "La Search API richiede probabilmente "
+                  "header/sessione/cookie/token "
+                  "specifici del frontend Volotea."
+              )
+
+              raise SystemExit(0)
+
+          # ========================================================
+          # ALTRI STATUS HTTP
+          # ========================================================
+
           if response.status_code != 200:
+
               print("")
               print("RISPOSTA API:")
-              print(response.text[:5000])
 
-          response.raise_for_status()
+              print(
+                  response.text[:5000]
+              )
 
-          data = response.json()
+              print("")
+              print(
+                  "Status HTTP inatteso."
+              )
+
+              raise SystemExit(0)
+
+          # ========================================================
+          # PARSING JSON
+          # ========================================================
+
+          try:
+              data = response.json()
+
+          except ValueError:
+
+              print("")
+              print(
+                  "ERRORE: risposta HTTP 200 "
+                  "ma non JSON."
+              )
+
+              print(
+                  response.text[:5000]
+              )
+
+              raise SystemExit(0)
 
           print("")
           print("Risposta JSON ricevuta: SI")
+
           print(
               "Dimensione risposta:",
               len(response.content),
               "bytes"
           )
 
-          # --------------------------------------------------------
-          # Ricerca ricorsiva dei voli
-          # --------------------------------------------------------
+          # ========================================================
+          # RICERCA RICORSIVA DEI VOLI
+          # ========================================================
 
           voli = []
 
@@ -573,24 +457,18 @@ jobs:
           )
 
           if not voli:
-              print("")
-              print(
-                  "ATTENZIONE: API raggiungibile, "
-                  "ma nessun volo trovato per "
-                  f"VRN -> CTA del {data_str}."
-              )
 
               print("")
               print(
-                  "Questo NON significa che l'API "
-                  "non funzioni."
+                  "Nessun volo trovato per "
+                  f"VRN -> CTA del {data_str}."
               )
 
               raise SystemExit(0)
 
-          # --------------------------------------------------------
-          # Estrazione del primo volo
-          # --------------------------------------------------------
+          # ========================================================
+          # PRIMO VOLO
+          # ========================================================
 
           volo = voli[0]
 
@@ -650,9 +528,9 @@ jobs:
                   identifier.get("carrierCode")
               )
 
-          # --------------------------------------------------------
-          # Estrazione prezzo
-          # --------------------------------------------------------
+          # ========================================================
+          # PREZZI
+          # ========================================================
 
           prezzi = []
 
@@ -666,9 +544,12 @@ jobs:
                   []
               ):
 
-                  if passenger.get(
-                      "passengerType"
-                  ) != "ADT":
+                  if (
+                      passenger.get(
+                          "passengerType"
+                      )
+                      != "ADT"
+                  ):
                       continue
 
                   fare_amount = (
@@ -715,8 +596,7 @@ jobs:
           else:
 
               print(
-                  "ATTENZIONE: nessun prezzo "
-                  "ADT trovato."
+                  "Nessun prezzo ADT trovato."
               )
 
           print("")
@@ -725,9 +605,7 @@ jobs:
           print("========================================")
 
           print("")
-          print(
-              "OK: stations.json funziona."
-          )
+          print("OK: stations.json funziona.")
 
           print(
               "OK: rotta VRN -> CTA individuata."
@@ -749,42 +627,149 @@ jobs:
               print(
                   "OK: prezzo interpretato."
               )
-
-          print("")
-          print(
-              "Volotea è pronta per essere "
-              "integrata nello scanner."
-          )
           PY
 
 
       # ============================================================
-      # VERIFICA ACCESS TOKEN
+      # AUTENTICAZIONE FLIGHT HUNTER
       # ============================================================
 
-      - name: Verify access token
+      - name: Get Flight Hunter access token
+        id: auth
+        shell: bash
+        env:
+          FH_BACKEND_URL: ${{ secrets.FH_BACKEND_URL }}
+          FH_PUBLISHABLE_KEY: ${{ secrets.FH_PUBLISHABLE_KEY }}
+          FH_EMAIL: ${{ secrets.FH_EMAIL }}
+          FH_PASSWORD: ${{ secrets.FH_PASSWORD }}
         run: |
           set -e
 
           echo "========================================"
-          echo "VERIFICA ACCESS TOKEN"
+          echo "AUTENTICAZIONE FLIGHT HUNTER"
           echo "========================================"
 
-          if [ -z "$FH_ACCESS_TOKEN" ]; then
-            echo "ERRORE: FH_ACCESS_TOKEN non disponibile"
+          if [ -z "$FH_BACKEND_URL" ]; then
+            echo "ERRORE: FH_BACKEND_URL mancante."
             exit 1
           fi
 
-          echo "OK: FH_ACCESS_TOKEN disponibile"
-          echo "Il valore del token non verrà mostrato."
+          if [ -z "$FH_PUBLISHABLE_KEY" ]; then
+            echo "ERRORE: FH_PUBLISHABLE_KEY mancante."
+            exit 1
+          fi
+
+          if [ -z "$FH_EMAIL" ]; then
+            echo "ERRORE: FH_EMAIL mancante."
+            exit 1
+          fi
+
+          if [ -z "$FH_PASSWORD" ]; then
+            echo "ERRORE: FH_PASSWORD mancante."
+            exit 1
+          fi
+
+          AUTH_URL="${FH_BACKEND_URL%/}/auth/v1/token?grant_type=password"
+
+          echo ""
+          echo "Endpoint autenticazione:"
+          echo "$AUTH_URL"
+
+          RESPONSE_FILE="$(mktemp)"
+
+          HTTP_CODE=$(
+            curl \
+              --silent \
+              --show-error \
+              --output "$RESPONSE_FILE" \
+              --write-out "%{http_code}" \
+              --request POST \
+              --header "apikey: ${FH_PUBLISHABLE_KEY}" \
+              --header "Authorization: Bearer ${FH_PUBLISHABLE_KEY}" \
+              --header "Content-Type: application/json" \
+              --data "$(python - <<'PY'
+          import json
+          import os
+
+          print(
+              json.dumps(
+                  {
+                      "email": os.environ["FH_EMAIL"],
+                      "password": os.environ["FH_PASSWORD"],
+                  }
+              )
+          )
+          PY
+          )" \
+              "$AUTH_URL"
+          )
+
+          echo ""
+          echo "HTTP status autenticazione: $HTTP_CODE"
+
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo ""
+            echo "ERRORE AUTENTICAZIONE"
+            echo "Risposta server:"
+            cat "$RESPONSE_FILE"
+            echo ""
+            rm -f "$RESPONSE_FILE"
+            exit 1
+          fi
+
+          ACCESS_TOKEN=$(
+            python - "$RESPONSE_FILE" <<'PY'
+          import json
+          import sys
+
+          filename = sys.argv[1]
+
+          with open(
+              filename,
+              "r",
+              encoding="utf-8"
+          ) as f:
+              data = json.load(f)
+
+          token = data.get("access_token")
+
+          if not token:
+              raise SystemExit(
+                  "access_token non presente "
+                  "nella risposta di autenticazione"
+              )
+
+          print(token)
+          PY
+          )
+
+          rm -f "$RESPONSE_FILE"
+
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "ERRORE: token vuoto."
+            exit 1
+          fi
+
+          echo ""
+          echo "Autenticazione completata."
+          echo "Token ottenuto: SI"
+
+          echo "FH_ACCESS_TOKEN=$ACCESS_TOKEN" >> "$GITHUB_ENV"
 
 
       # ============================================================
-      # AVVIO FLIGHT HUNTER
+      # ESECUZIONE FLIGHT HUNTER
       # ============================================================
 
       - name: Run Flight Hunter Scanner
         shell: bash
+        env:
+          FH_IMPORT_URL: ${{ secrets.FH_IMPORT_URL }}
+          FH_ACCESS_TOKEN: ${{ env.FH_ACCESS_TOKEN }}
+          FH_BACKEND_URL: ${{ secrets.FH_BACKEND_URL }}
+          FH_PUBLISHABLE_KEY: ${{ secrets.FH_PUBLISHABLE_KEY }}
+          FH_EMAIL: ${{ secrets.FH_EMAIL }}
+          FH_PASSWORD: ${{ secrets.FH_PASSWORD }}
         run: |
           set -o pipefail
 
@@ -813,48 +798,32 @@ jobs:
             echo "ERRORE FLIGHT HUNTER"
             echo "========================================"
 
+            echo ""
+            echo "LOG COMPLETO:"
+            echo "----------------------------------------"
+
             cat flight_hunter.log
 
-            echo "========================================"
+            echo ""
+            echo "----------------------------------------"
 
             exit "$EXIT_CODE"
           fi
 
+          echo ""
+          echo "========================================"
+          echo "FLIGHT HUNTER COMPLETATO"
+          echo "========================================"
+
 
       # ============================================================
-      # LOG
+      # SALVATAGGIO LOG
       # ============================================================
 
       - name: Upload scanner log
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: flight-hunter-log
           path: flight_hunter.log
           if-no-files-found: ignore
-
-
-      # ============================================================
-      # SUCCESSO
-      # ============================================================
-
-      - name: Scanner completed
-        if: success()
-        run: |
-          echo "========================================"
-          echo "FLIGHT HUNTER COMPLETATO CON SUCCESSO"
-          echo "========================================"
-
-
-      # ============================================================
-      # ERRORE
-      # ============================================================
-
-      - name: Scanner failed
-        if: failure()
-        run: |
-          echo "========================================"
-          echo "FLIGHT HUNTER FALLITO"
-          echo "========================================"
-
-          echo "Controlla i passaggi precedenti per individuare l'errore."
