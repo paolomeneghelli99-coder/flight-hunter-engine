@@ -81,30 +81,93 @@ jobs:
           if [ -z "$FH_BACKEND_URL" ]; then
             echo "ERRORE: FH_BACKEND_URL mancante"
             exit 1
-          else
-            echo "OK: FH_BACKEND_URL presente"
           fi
 
           if [ -z "$FH_PUBLISHABLE_KEY" ]; then
             echo "ERRORE: FH_PUBLISHABLE_KEY mancante"
             exit 1
-          else
-            echo "OK: FH_PUBLISHABLE_KEY presente"
           fi
 
           if [ -z "$FH_EMAIL" ]; then
             echo "ERRORE: FH_EMAIL mancante"
             exit 1
-          else
-            echo "OK: FH_EMAIL presente"
           fi
 
           if [ -z "$FH_PASSWORD" ]; then
             echo "ERRORE: FH_PASSWORD mancante"
             exit 1
-          else
-            echo "OK: FH_PASSWORD presente"
           fi
+
+          echo "OK: tutti i secret sono presenti"
+
+      - name: Authenticate with Supabase
+        shell: bash
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "AUTENTICAZIONE FLIGHT HUNTER"
+          echo "========================================"
+
+          AUTH_URL="${FH_BACKEND_URL%/}/auth/v1/token?grant_type=password"
+
+          echo "Endpoint autenticazione:"
+          echo "${FH_BACKEND_URL%/}/auth/v1/token"
+
+          RESPONSE=$(curl -sS \
+            -X POST \
+            "$AUTH_URL" \
+            -H "apikey: $FH_PUBLISHABLE_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"email\":\"$FH_EMAIL\",\"password\":\"$FH_PASSWORD\"}")
+
+          echo ""
+          echo "Risposta autenticazione ricevuta."
+
+          ACCESS_TOKEN=$(python -c '
+          import json
+          import sys
+
+          data = json.loads(sys.stdin.read())
+
+          token = data.get("access_token")
+
+          if not token:
+              error = data.get("error_description") or data.get("msg") or data.get("error") or "Autenticazione fallita"
+              print(f"ERRORE AUTENTICAZIONE: {error}", file=sys.stderr)
+              sys.exit(1)
+
+          print(token)
+          ' <<< "$RESPONSE")
+
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "ERRORE: JWT non ricevuto"
+            exit 1
+          fi
+
+          echo "::add-mask::$ACCESS_TOKEN"
+
+          echo "JWT ottenuto correttamente."
+
+          echo "FH_ACCESS_TOKEN=$ACCESS_TOKEN" >> "$GITHUB_ENV"
+
+          echo "Autenticazione completata."
+
+      - name: Verify access token
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "VERIFICA JWT"
+          echo "========================================"
+
+          if [ -z "$FH_ACCESS_TOKEN" ]; then
+            echo "ERRORE: FH_ACCESS_TOKEN non disponibile"
+            exit 1
+          fi
+
+          echo "OK: FH_ACCESS_TOKEN disponibile"
+          echo "Il valore del token non verrà mostrato."
 
       - name: Run Flight Hunter Scanner
         shell: bash
@@ -132,7 +195,7 @@ jobs:
           if [ "$EXIT_CODE" -ne 0 ]; then
             echo ""
             echo "========================================"
-            echo "ERRORE COMPLETO FLIGHT HUNTER"
+            echo "ERRORE FLIGHT HUNTER"
             echo "========================================"
             cat flight_hunter.log
             echo "========================================"
@@ -141,7 +204,7 @@ jobs:
 
       - name: Upload scanner log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: flight-hunter-log
           path: flight_hunter.log
@@ -160,4 +223,3 @@ jobs:
           echo "========================================"
           echo "FLIGHT HUNTER FALLITO"
           echo "========================================"
-          echo "Controlla il log del passaggio 'Run Flight Hunter Scanner'."
