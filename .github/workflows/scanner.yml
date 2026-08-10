@@ -1,4 +1,3 @@
-```yaml
 name: Flight Hunter Scanner
 
 on:
@@ -56,4 +55,3 @@ jobs:
           echo "Avvio scanner Flight Hunter..."
 
           python scanner.py
-```
