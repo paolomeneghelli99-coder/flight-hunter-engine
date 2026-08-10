@@ -3,20 +3,17 @@
 Strategia:
 
 1. Apre il booking engine Volotea.
-2. Chiude il banner cookie.
-3. Apre esplicitamente il nuovo selettore aeroporti
-   cliccando il vecchio campo visibile del frontend.
-4. Compila il nuovo input #origin.
-5. Seleziona l'aeroporto dall'elenco.
-6. Compila il nuovo input #destination.
-7. Seleziona la destinazione dall'elenco.
-8. Imposta la data.
-9. Intercetta la richiesta/risposta reale della Search API.
-10. Estrae voli, prezzi, orari e durata.
-11. Converte i risultati nel modello Offerta.
+2. Chiude eventuali banner cookie.
+3. Apre il selettore aeroporti del nuovo frontend.
+4. Seleziona origine e destinazione tramite il componente visibile.
+5. Seleziona la data.
+6. Avvia la ricerca dal frontend.
+7. Intercetta le richieste/risposte reali della ricerca voli.
+8. Estrae voli, prezzi, orari, durata e numero volo.
+9. Converte i risultati nel modello Offerta di Flight Hunter.
 
 NOTA:
-L'endpoint storico stations.json non viene utilizzato.
+L'endpoint storico stations.json NON viene utilizzato.
 """
 
 from __future__ import annotations
@@ -28,6 +25,7 @@ from typing import Any
 
 from playwright.sync_api import (
     Browser,
+    BrowserContext,
     Page,
     TimeoutError as PlaywrightTimeoutError,
     sync_playwright,
@@ -104,23 +102,54 @@ def calcola_durata(
 def estrai_prezzo(
     volo: dict[str, Any],
 ) -> float | None:
-    """Estrae il prezzo minimo ADT."""
+    """Estrae il prezzo minimo per un adulto."""
 
     prezzi: list[float] = []
 
-    for fare in volo.get("fares", []) or []:
+    fares = volo.get("fares") or []
 
-        for passenger in (
-            fare.get("passengerFares", []) or []
+    if not isinstance(fares, list):
+        return None
+
+    for fare in fares:
+
+        if not isinstance(fare, dict):
+            continue
+
+        passenger_fares = (
+            fare.get("passengerFares") or []
+        )
+
+        if not isinstance(
+            passenger_fares,
+            list,
         ):
+            continue
 
-            if passenger.get("passengerType") != "ADT":
+        for passenger in passenger_fares:
+
+            if not isinstance(
+                passenger,
+                dict,
+            ):
+                continue
+
+            if (
+                passenger.get("passengerType")
+                != "ADT"
+            ):
                 continue
 
             fare_amount = (
                 passenger.get("fareAmount")
                 or {}
             )
+
+            if not isinstance(
+                fare_amount,
+                dict,
+            ):
+                continue
 
             valore = (
                 fare_amount.get("eurAmount")
@@ -131,8 +160,14 @@ def estrai_prezzo(
                 continue
 
             try:
+
                 prezzo = float(valore)
-            except (TypeError, ValueError):
+
+            except (
+                TypeError,
+                ValueError,
+            ):
+
                 continue
 
             if prezzo > 0:
@@ -147,7 +182,7 @@ def estrai_prezzo(
 def trova_voli(
     obj: Any,
 ) -> list[dict[str, Any]]:
-    """Cerca ricorsivamente gli oggetti volo."""
+    """Cerca ricorsivamente gli oggetti volo nella risposta API."""
 
     risultati: list[dict[str, Any]] = []
 
@@ -190,12 +225,18 @@ def estrai_dati_volo(
         or {}
     )
 
-    origine = (
+    if not isinstance(
+        designator,
+        dict,
+    ):
+        return None
+
+    origine = str(
         designator.get("origin")
         or ""
     ).upper()
 
-    destinazione = (
+    destinazione = str(
         designator.get("destination")
         or ""
     ).upper()
@@ -233,20 +274,35 @@ def estrai_dati_volo(
         or []
     )
 
-    if segments:
+    if isinstance(
+        segments,
+        list,
+    ) and segments:
 
-        identifier = (
-            segments[0].get(
-                "identifier"
-            )
-            or {}
-        )
+        primo_segmento = segments[0]
 
-        numero_volo = (
-            identifier.get(
-                "identifier"
+        if isinstance(
+            primo_segmento,
+            dict,
+        ):
+
+            identifier = (
+                primo_segmento.get(
+                    "identifier"
+                )
+                or {}
             )
-        )
+
+            if isinstance(
+                identifier,
+                dict,
+            ):
+
+                numero_volo = (
+                    identifier.get(
+                        "identifier"
+                    )
+                )
 
     durata = calcola_durata(
         partenza,
@@ -310,6 +366,8 @@ class VoloteaScanner(BaseScanner):
             "button:has-text('Only essential')",
             "button:has-text('Solo essenziali')",
             "button:has-text('Accetta solo i necessari')",
+            "button:has-text('Accept all')",
+            "button:has-text('Accetta tutto')",
         ]
 
         for selettore in selettori:
@@ -347,7 +405,7 @@ class VoloteaScanner(BaseScanner):
                     )
 
                     print(
-                        "[volotea] cookie chiusi."
+                        "[volotea] cookie banner chiuso."
                     )
 
                     return
@@ -356,7 +414,7 @@ class VoloteaScanner(BaseScanner):
                 continue
 
     # ========================================================
-    # DEBUG FORM
+    # DEBUG INPUT
     # ========================================================
 
     def stampa_input(
@@ -405,10 +463,12 @@ class VoloteaScanner(BaseScanner):
                                 "placeholder"
                             ),
                             "value": elemento.input_value(),
-                            "readonly": elemento.get_attribute(
-                                "readonly"
-                            )
-                            is not None,
+                            "readonly": (
+                                elemento.get_attribute(
+                                    "readonly"
+                                )
+                                is not None
+                            ),
                             "disabled": elemento.is_disabled(),
                             "className": elemento.get_attribute(
                                 "class"
@@ -417,32 +477,90 @@ class VoloteaScanner(BaseScanner):
                     )
 
                 except Exception:
-                    pass
+                    continue
 
         except Exception as exc:
 
             print(
                 "[volotea] errore debug input:",
-                exc,
+                repr(exc),
             )
 
     # ========================================================
-    # APERTURA NUOVO SELETTORE AEROPORTI
+    # DEBUG DOM
+    # ========================================================
+
+    def stampa_dom_aeroporti(
+        self,
+        page: Page,
+    ) -> None:
+        """Stampa gli elementi visibili utili alla selezione aeroporto."""
+
+        print("")
+        print(
+            "[volotea] ELEMENTI AEROPORTI VISIBILI"
+        )
+        print("-" * 60)
+
+        selettore = (
+            "button:visible, "
+            "[role='button']:visible, "
+            "[role='option']:visible, "
+            "li:visible"
+        )
+
+        try:
+
+            elementi = page.locator(
+                selettore
+            )
+
+            limite = min(
+                elementi.count(),
+                120,
+            )
+
+            for i in range(limite):
+
+                elemento = elementi.nth(i)
+
+                try:
+
+                    testo = (
+                        elemento.inner_text()
+                        .strip()
+                    )
+
+                except Exception:
+
+                    continue
+
+                if not testo:
+                    continue
+
+                if len(testo) > 250:
+                    continue
+
+                print(
+                    f" - {repr(testo)}"
+                )
+
+        except Exception as exc:
+
+            print(
+                "[volotea] errore stampa DOM:",
+                repr(exc),
+            )
+
+    # ========================================================
+    # APERTURA SELETTORE AEROPORTI
     # ========================================================
 
     def apri_selettore_aeroporti(
         self,
         page: Page,
     ) -> bool:
-        """Apre il nuovo componente aeroporti Volotea.
-
-        Il nuovo frontend mantiene nel DOM i campi
-        #origin e #destination, ma questi sono nascosti
-        finché non viene aperto il componente tramite
-        il vecchio campo #input-text_sf-origin.
-
-        Questo è il passaggio fondamentale emerso dal test.
-        """
+        """Apre il componente aeroporti del nuovo frontend."""
 
         print("")
         print(
@@ -450,149 +568,107 @@ class VoloteaScanner(BaseScanner):
         )
         print("=" * 60)
 
-        # ----------------------------------------------------
-        # PRIMO TENTATIVO:
-        # vecchio campo origine del frontend
-        # ----------------------------------------------------
+        # Il nuovo frontend mostra inizialmente:
+        #
+        # input-text_sf-origin
+        #
+        # mentre #origin e #destination
+        # possono essere presenti ma nascosti.
+        #
+        # Per questo NON utilizziamo #origin come trigger.
 
-        selettori_trigger = [
+        trigger_selettori = [
             "#input-text_sf-origin:visible",
             "input[id='input-text_sf-origin']:visible",
-        ]
-
-        for selettore in selettori_trigger:
-
-            try:
-
-                elemento = page.locator(
-                    selettore
-                ).first
-
-                if elemento.count() == 0:
-                    continue
-
-                if not elemento.is_visible():
-                    continue
-
-                print(
-                    "Vecchio campo origine trovato."
-                )
-
-                print(
-                    "Apertura componente aeroporti tramite click forzato."
-                )
-
-                elemento.click(
-                    force=True,
-                    timeout=10000,
-                )
-
-                page.wait_for_timeout(
-                    1000
-                )
-
-                # ------------------------------------------------
-                # Verifica reale del nuovo componente
-                # ------------------------------------------------
-
-                origin = page.locator(
-                    "#origin:visible"
-                ).first
-
-                destination = page.locator(
-                    "#destination:visible"
-                ).first
-
-                origin.wait_for(
-                    state="visible",
-                    timeout=10000,
-                )
-
-                destination.wait_for(
-                    state="visible",
-                    timeout=10000,
-                )
-
-                print(
-                    "Nuovo componente aeroporto:"
-                    " #origin/#destination PRESENTE"
-                )
-
-                return True
-
-            except Exception as exc:
-
-                print(
-                    "[volotea] trigger selettore fallito:",
-                    repr(exc),
-                )
-
-        # ----------------------------------------------------
-        # FALLBACK:
-        # cerca qualsiasi input Select airport visibile
-        # ----------------------------------------------------
-
-        fallback_selectors = [
             "input[placeholder='Select airport']:visible",
             "input[placeholder*='Select airport' i]:visible",
         ]
 
-        for selettore in fallback_selectors:
+        for selettore in trigger_selettori:
 
             try:
 
-                elemento = page.locator(
+                elementi = page.locator(
                     selettore
-                ).first
-
-                if elemento.count() == 0:
-                    continue
-
-                if not elemento.is_visible():
-                    continue
-
-                elemento.click(
-                    force=True,
-                    timeout=10000,
                 )
 
-                page.wait_for_timeout(
-                    1000
-                )
+                count = elementi.count()
 
-                origin = page.locator(
-                    "#origin:visible"
-                ).first
+                if count == 0:
+                    continue
 
-                destination = page.locator(
-                    "#destination:visible"
-                ).first
+                for i in range(count):
 
-                if (
-                    origin.count() > 0
-                    and destination.count() > 0
-                    and origin.is_visible()
-                    and destination.is_visible()
-                ):
+                    elemento = elementi.nth(i)
+
+                    if not elemento.is_visible():
+                        continue
 
                     print(
-                        "Nuovo componente aeroporto aperto tramite fallback."
+                        "[volotea] trigger trovato:",
+                        selettore,
                     )
 
-                    return True
+                    elemento.click(
+                        force=True,
+                        timeout=10000,
+                    )
 
-            except Exception:
-                continue
+                    page.wait_for_timeout(
+                        1200
+                    )
+
+                    origin_visibile = page.locator(
+                        "#origin:visible"
+                    ).count()
+
+                    destination_visibile = page.locator(
+                        "#destination:visible"
+                    ).count()
+
+                    print(
+                        "[volotea] #origin visibile:",
+                        origin_visibile,
+                    )
+
+                    print(
+                        "[volotea] #destination visibile:",
+                        destination_visibile,
+                    )
+
+                    if (
+                        origin_visibile > 0
+                        or destination_visibile > 0
+                    ):
+
+                        print(
+                            "[volotea] nuovo selettore aeroporti aperto."
+                        )
+
+                        return True
+
+            except Exception as exc:
+
+                print(
+                    "[volotea] errore trigger:",
+                    repr(exc),
+                )
 
         print(
             "[volotea] impossibile aprire il selettore aeroporti."
         )
 
         try:
+
+            self.stampa_dom_aeroporti(
+                page
+            )
+
             page.screenshot(
                 path="/tmp/volotea-airport-selector-failed.png",
                 full_page=True,
             )
+
         except Exception:
             pass
 
@@ -608,7 +684,7 @@ class VoloteaScanner(BaseScanner):
         campo: str,
         codice: str,
     ) -> bool:
-        """Seleziona un aeroporto dal nuovo componente."""
+        """Seleziona un aeroporto."""
 
         codice = codice.upper()
 
@@ -618,32 +694,37 @@ class VoloteaScanner(BaseScanner):
         )
 
         # ----------------------------------------------------
-        # Assicuriamoci che il componente sia aperto.
+        # Verifica input visibile
         # ----------------------------------------------------
 
-        if not (
-            page.locator(
-                f"#{campo}:visible"
-            ).count()
-        ):
+        input_locator = page.locator(
+            f"#{campo}:visible"
+        ).first
+
+        if input_locator.count() == 0:
 
             print(
-                f"[volotea] #{campo} non visibile."
+                f"[volotea] #{campo} non è visibile."
             )
 
+            # Proviamo ad aprire il selettore.
             if not self.apri_selettore_aeroporti(
                 page
             ):
 
                 return False
 
-        # ----------------------------------------------------
-        # Recupera SOLO l'input visibile.
-        # ----------------------------------------------------
+            input_locator = page.locator(
+                f"#{campo}:visible"
+            ).first
 
-        input_locator = page.locator(
-            f"#{campo}:visible"
-        ).first
+        if input_locator.count() == 0:
+
+            print(
+                f"[volotea] #{campo} ancora non trovato."
+            )
+
+            return False
 
         try:
 
@@ -655,14 +736,14 @@ class VoloteaScanner(BaseScanner):
         except Exception as exc:
 
             print(
-                f"[volotea] #{campo} non è diventato visibile:",
+                f"[volotea] #{campo} non visibile:",
                 repr(exc),
             )
 
             return False
 
         # ----------------------------------------------------
-        # Compilazione.
+        # Compilazione
         # ----------------------------------------------------
 
         try:
@@ -683,83 +764,155 @@ class VoloteaScanner(BaseScanner):
             )
 
             page.wait_for_timeout(
-                1200
+                1500
             )
 
         except Exception as exc:
 
             print(
                 f"[volotea] errore compilazione {campo}:",
-                exc,
+                repr(exc),
             )
 
             return False
 
         # ----------------------------------------------------
-        # DEBUG: mostra le opzioni visibili.
+        # DEBUG
         # ----------------------------------------------------
 
-        try:
+        self.stampa_dom_aeroporti(
+            page
+        )
 
-            print(
-                f"[volotea] ricerca opzione {codice}..."
-            )
+        # ----------------------------------------------------
+        # Ricerca esatta del codice IATA
+        # ----------------------------------------------------
 
-            elementi = page.locator(
-                "button:visible, "
-                "[role='button']:visible, "
-                "li:visible, "
+        pattern = re.compile(
+            rf"^\s*{re.escape(codice)}\s*$",
+            re.I,
+        )
+
+        candidati = [
+            page.get_by_text(
+                pattern
+            ),
+            page.locator(
                 "[role='option']:visible"
-            )
+            ),
+            page.locator(
+                "li:visible"
+            ),
+            page.locator(
+                "button:visible"
+            ),
+        ]
 
-            for i in range(
-                min(
-                    elementi.count(),
-                    150,
-                )
-            ):
+        for locator in candidati:
 
-                elemento = elementi.nth(i)
+            try:
 
-                try:
+                count = locator.count()
 
-                    testo = (
-                        elemento.inner_text()
-                        .strip()
+                for i in range(count):
+
+                    elemento = locator.nth(i)
+
+                    if not elemento.is_visible():
+                        continue
+
+                    try:
+
+                        testo = (
+                            elemento.inner_text()
+                            .strip()
+                        )
+
+                    except Exception:
+
+                        continue
+
+                    if not testo:
+                        continue
+
+                    # Evitiamo di cliccare elementi
+                    # che contengono il codice solo
+                    # casualmente.
+
+                    righe = [
+                        r.strip()
+                        for r in testo.splitlines()
+                        if r.strip()
+                    ]
+
+                    match_esatto = any(
+                        r.upper() == codice
+                        for r in righe
                     )
 
-                except Exception:
-
-                    continue
-
-                if not testo:
-                    continue
-
-                if codice not in testo.upper():
-                    continue
-
-                # Evita di cliccare accidentalmente
-                # il campo stesso.
-                if testo.upper() == codice:
-                    candidato = elemento
-                else:
-                    candidato = elemento
-
-                print(
-                    "[volotea] opzione trovata:",
-                    repr(testo),
-                )
-
-                try:
-
-                    candidato.click(
-                        force=True,
-                        timeout=5000,
+                    contiene_codice = (
+                        codice in testo.upper()
                     )
+
+                    if not (
+                        match_esatto
+                        or (
+                            contiene_codice
+                            and len(testo) < 200
+                        )
+                    ):
+                        continue
+
+                    print(
+                        "[volotea] candidato aeroporto:",
+                        repr(testo),
+                    )
+
+                    try:
+
+                        elemento.click(
+                            force=True,
+                            timeout=5000,
+                        )
+
+                    except Exception:
+
+                        # Alcuni componenti hanno
+                        # il testo annidato.
+                        try:
+
+                            elemento.locator(
+                                "xpath=.."
+                            ).click(
+                                force=True,
+                                timeout=5000,
+                            )
+
+                        except Exception:
+
+                            continue
 
                     page.wait_for_timeout(
-                        800
+                        1000
                     )
+
+                    # Verifica che il campo sia
+                    # effettivamente cambiato.
+
+                    try:
+
+                        valore = (
+                            input_locator.input_value()
+                            or ""
+                        )
+
+                        print(
+                            "[volotea] valore campo dopo selezione:",
+                            repr(valore),
+                        )
+
+                    except Exception:
+                        pass
 
                     print(
                         f"[volotea] {campo} selezionato: {codice}"
@@ -767,106 +920,76 @@ class VoloteaScanner(BaseScanner):
 
                     return True
 
-                except Exception:
-                    continue
-
-        except Exception as exc:
-
-            print(
-                "[volotea] errore ricerca opzione:",
-                exc,
-            )
+            except Exception:
+                continue
 
         # ----------------------------------------------------
-        # FALLBACK IATA
+        # Fallback IATA specifico
         # ----------------------------------------------------
 
-        try:
+        selettori_iata = [
+            "p.c-iata-tag__text:visible",
+            "[class*='iata']:visible",
+            "[class*='IATA']:visible",
+        ]
 
-            iata = page.locator(
-                "p.c-iata-tag__text:visible"
-            ).filter(
-                has_text=codice
-            ).first
+        for selettore in selettori_iata:
 
-            if (
-                iata.count() > 0
-                and iata.is_visible()
-            ):
+            try:
 
-                print(
-                    "[volotea] selezione tramite IATA:"
-                    f" {codice}"
+                elementi = page.locator(
+                    selettore
                 )
 
-                iata.click(
-                    force=True,
-                    timeout=5000,
-                )
+                for i in range(
+                    elementi.count()
+                ):
 
-                page.wait_for_timeout(
-                    800
-                )
+                    elemento = elementi.nth(i)
 
-                return True
+                    if not elemento.is_visible():
+                        continue
 
-        except Exception:
-            pass
+                    testo = (
+                        elemento.inner_text()
+                        .strip()
+                    )
 
-        # ----------------------------------------------------
-        # FALLBACK TESTO
-        # ----------------------------------------------------
+                    if (
+                        testo.upper()
+                        != codice
+                    ):
+                        continue
 
-        try:
+                    print(
+                        "[volotea] IATA trovato:",
+                        repr(testo),
+                    )
 
-            elementi = page.get_by_text(
-                re.compile(
-                    rf"\b{re.escape(codice)}\b",
-                    re.I,
-                )
-            )
+                    elemento.click(
+                        force=True,
+                        timeout=5000,
+                    )
 
-            for i in range(
-                elementi.count()
-            ):
+                    page.wait_for_timeout(
+                        1000
+                    )
 
-                elemento = elementi.nth(i)
+                    print(
+                        f"[volotea] {campo} selezionato tramite IATA."
+                    )
 
-                if not elemento.is_visible():
-                    continue
+                    return True
 
-                testo = (
-                    elemento.inner_text()
-                    .strip()
-                )
-
-                if codice not in testo.upper():
-                    continue
-
-                print(
-                    "[volotea] fallback testo:",
-                    repr(testo),
-                )
-
-                elemento.click(
-                    force=True,
-                    timeout=5000,
-                )
-
-                page.wait_for_timeout(
-                    800
-                )
-
-                return True
-
-        except Exception:
-            pass
+            except Exception:
+                continue
 
         print(
             f"[volotea] aeroporto {codice} non selezionato."
         )
 
         try:
+
             page.screenshot(
                 path=(
                     f"/tmp/"
@@ -874,6 +997,7 @@ class VoloteaScanner(BaseScanner):
                 ),
                 full_page=True,
             )
+
         except Exception:
             pass
 
@@ -902,28 +1026,46 @@ class VoloteaScanner(BaseScanner):
         )
 
         # ----------------------------------------------------
-        # Recupera campo departure visibile.
+        # Campo departure
         # ----------------------------------------------------
 
-        try:
+        selettori = [
+            "#departure:visible",
+            "input[name='departure']:visible",
+            "input[placeholder*='departure' i]:visible",
+            "input[placeholder*='date' i]:visible",
+        ]
 
-            departure = page.locator(
-                "#departure:visible"
-            ).first
+        departure = None
 
-            if departure.count() == 0:
+        for selettore in selettori:
 
-                departure = page.locator(
-                    "input[name='departure']:visible"
+            try:
+
+                loc = page.locator(
+                    selettore
                 ).first
 
-            if departure.count() == 0:
+                if (
+                    loc.count() > 0
+                    and loc.is_visible()
+                ):
 
-                print(
-                    "[volotea] campo departure non trovato."
-                )
+                    departure = loc
+                    break
 
-                return False
+            except Exception:
+                continue
+
+        if departure is None:
+
+            print(
+                "[volotea] campo departure non trovato."
+            )
+
+            return False
+
+        try:
 
             departure.click(
                 force=True,
@@ -931,14 +1073,14 @@ class VoloteaScanner(BaseScanner):
             )
 
             page.wait_for_timeout(
-                800
+                1000
             )
 
         except Exception as exc:
 
             print(
                 "[volotea] errore apertura calendario:",
-                exc,
+                repr(exc),
             )
 
             return False
@@ -948,16 +1090,28 @@ class VoloteaScanner(BaseScanner):
         )
 
         # ----------------------------------------------------
-        # Prima prova: aria-label.
+        # Cerchiamo la data con aria-label.
         # ----------------------------------------------------
 
-        selettori = [
-            f"button[aria-label*='{giorno}']:visible",
-            f"[role='button'][aria-label*='{giorno}']:visible",
-            f"button:has-text('{giorno}'):visible",
+        selettori_data = [
+            (
+                "button[aria-label*='"
+                + giorno
+                + "']:visible"
+            ),
+            (
+                "[role='button'][aria-label*='"
+                + giorno
+                + "']:visible"
+            ),
+            (
+                "[role='gridcell'][aria-label*='"
+                + giorno
+                + "']:visible"
+            ),
         ]
 
-        for selettore in selettori:
+        for selettore in selettori_data:
 
             try:
 
@@ -974,6 +1128,8 @@ class VoloteaScanner(BaseScanner):
                     if not elemento.is_visible():
                         continue
 
+                    testo = ""
+
                     try:
 
                         testo = (
@@ -982,11 +1138,10 @@ class VoloteaScanner(BaseScanner):
                         )
 
                     except Exception:
-
-                        testo = ""
+                        pass
 
                     print(
-                        "[volotea] giorno candidato:",
+                        "[volotea] data candidata:",
                         repr(testo),
                     )
 
@@ -996,12 +1151,12 @@ class VoloteaScanner(BaseScanner):
                     )
 
                     page.wait_for_timeout(
-                        500
+                        800
                     )
 
                     print(
-                        "[volotea] giorno selezionato:",
-                        giorno,
+                        "[volotea] data selezionata:",
+                        data_partenza.isoformat(),
                     )
 
                     return True
@@ -1010,7 +1165,7 @@ class VoloteaScanner(BaseScanner):
                 continue
 
         # ----------------------------------------------------
-        # Fallback: elemento con testo esatto.
+        # Fallback: pulsanti con giorno esatto.
         # ----------------------------------------------------
 
         try:
@@ -1018,7 +1173,7 @@ class VoloteaScanner(BaseScanner):
             elementi = page.locator(
                 "button:visible, "
                 "[role='button']:visible, "
-                "[class*='day']:visible"
+                "[role='gridcell']:visible"
             )
 
             for i in range(
@@ -1052,7 +1207,7 @@ class VoloteaScanner(BaseScanner):
                     )
 
                     page.wait_for_timeout(
-                        500
+                        800
                     )
 
                     print(
@@ -1074,10 +1229,12 @@ class VoloteaScanner(BaseScanner):
         )
 
         try:
+
             page.screenshot(
                 path="/tmp/volotea-date-selection-failed.png",
                 full_page=True,
             )
+
         except Exception:
             pass
 
@@ -1091,7 +1248,7 @@ class VoloteaScanner(BaseScanner):
         self,
         page: Page,
     ):
-        """Trova il pulsante Search flights in modo resiliente."""
+        """Trova il pulsante di ricerca."""
 
         pattern = re.compile(
             r"search\s*flights|"
@@ -1103,7 +1260,7 @@ class VoloteaScanner(BaseScanner):
         )
 
         # ----------------------------------------------------
-        # ROLE BUTTON
+        # Role button
         # ----------------------------------------------------
 
         try:
@@ -1132,10 +1289,12 @@ class VoloteaScanner(BaseScanner):
 
                     continue
 
-                if pattern.search(testo):
+                if pattern.search(
+                    testo
+                ):
 
                     print(
-                        "[volotea] pulsante trovato:",
+                        "[volotea] pulsante ricerca:",
                         repr(testo),
                     )
 
@@ -1145,7 +1304,7 @@ class VoloteaScanner(BaseScanner):
             pass
 
         # ----------------------------------------------------
-        # TESTO
+        # Testo
         # ----------------------------------------------------
 
         try:
@@ -1163,11 +1322,20 @@ class VoloteaScanner(BaseScanner):
                 if not elemento.is_visible():
                     continue
 
-                print(
-                    "[volotea] elemento ricerca trovato:",
-                    repr(
+                try:
+
+                    testo = (
                         elemento.inner_text()
-                    ),
+                        .strip()
+                    )
+
+                except Exception:
+
+                    continue
+
+                print(
+                    "[volotea] elemento ricerca:",
+                    repr(testo),
                 )
 
                 return elemento
@@ -1176,7 +1344,7 @@ class VoloteaScanner(BaseScanner):
             pass
 
         # ----------------------------------------------------
-        # SUBMIT
+        # Submit
         # ----------------------------------------------------
 
         try:
@@ -1206,7 +1374,7 @@ class VoloteaScanner(BaseScanner):
         return None
 
     # ========================================================
-    # RICERCA API
+    # INTERCETTAZIONE RETE
     # ========================================================
 
     def esegui_ricerca(
@@ -1216,10 +1384,14 @@ class VoloteaScanner(BaseScanner):
         destinazione: str,
         data_partenza: date,
     ) -> list[dict[str, Any]]:
-        """Esegue una ricerca reale tramite frontend."""
+        """Esegue una ricerca reale tramite il frontend."""
 
         risposta_json: list[Any] = []
         richieste_search: list[Any] = []
+
+        # ----------------------------------------------------
+        # REQUEST
+        # ----------------------------------------------------
 
         def intercetta_request(
             request,
@@ -1238,7 +1410,7 @@ class VoloteaScanner(BaseScanner):
 
                 print("")
                 print(
-                    "[volotea] REQUEST SEARCH:"
+                    "[volotea] REQUEST SEARCH"
                 )
 
                 print(
@@ -1253,13 +1425,15 @@ class VoloteaScanner(BaseScanner):
 
                 try:
 
-                    post_data = request.post_data
+                    post_data = (
+                        request.post_data
+                    )
 
                     if post_data:
 
                         print(
                             "  POST DATA:",
-                            post_data[:2000],
+                            post_data[:3000],
                         )
 
                 except Exception:
@@ -1271,6 +1445,10 @@ class VoloteaScanner(BaseScanner):
 
             except Exception:
                 pass
+
+        # ----------------------------------------------------
+        # RESPONSE
+        # ----------------------------------------------------
 
         def intercetta_response(
             response,
@@ -1284,12 +1462,15 @@ class VoloteaScanner(BaseScanner):
                 ):
                     return
 
-                if response.request.method != "POST":
+                if (
+                    response.request.method
+                    != "POST"
+                ):
                     return
 
                 print("")
                 print(
-                    "[volotea] RESPONSE SEARCH:"
+                    "[volotea] RESPONSE SEARCH"
                 )
 
                 print(
@@ -1318,7 +1499,7 @@ class VoloteaScanner(BaseScanner):
 
                     print(
                         "[volotea] risposta non JSON:",
-                        exc,
+                        repr(exc),
                     )
 
                     return
@@ -1335,7 +1516,7 @@ class VoloteaScanner(BaseScanner):
 
                 print(
                     "[volotea] errore intercettazione:",
-                    exc,
+                    repr(exc),
                 )
 
         page.on(
@@ -1347,6 +1528,10 @@ class VoloteaScanner(BaseScanner):
             "response",
             intercetta_response,
         )
+
+        # ----------------------------------------------------
+        # HEADER
+        # ----------------------------------------------------
 
         print("")
         print("=" * 60)
@@ -1391,7 +1576,7 @@ class VoloteaScanner(BaseScanner):
 
             print(
                 "[volotea] errore apertura:",
-                exc,
+                repr(exc),
             )
 
             return []
@@ -1405,10 +1590,15 @@ class VoloteaScanner(BaseScanner):
             page.url,
         )
 
-        print(
-            "[volotea] Titolo:",
-            page.title(),
-        )
+        try:
+
+            print(
+                "[volotea] titolo:",
+                page.title(),
+            )
+
+        except Exception:
+            pass
 
         self.chiudi_cookie(
             page
@@ -1435,7 +1625,7 @@ class VoloteaScanner(BaseScanner):
 
         self.stampa_input(
             page,
-            "NUOVO FORM AEROPORTI",
+            "FORM AEROPORTI APERTO",
         )
 
         # ----------------------------------------------------
@@ -1495,7 +1685,7 @@ class VoloteaScanner(BaseScanner):
         )
 
         # ----------------------------------------------------
-        # SEARCH
+        # RICERCA
         # ----------------------------------------------------
 
         print("")
@@ -1546,7 +1736,7 @@ class VoloteaScanner(BaseScanner):
                         )
 
                     except Exception:
-                        pass
+                        continue
 
             except Exception:
                 pass
@@ -1564,7 +1754,7 @@ class VoloteaScanner(BaseScanner):
             return []
 
         # ----------------------------------------------------
-        # CLICK
+        # CLICK SEARCH
         # ----------------------------------------------------
 
         print(
@@ -1581,7 +1771,7 @@ class VoloteaScanner(BaseScanner):
 
             print(
                 "[volotea] click normale fallito:",
-                exc,
+                repr(exc),
             )
 
             try:
@@ -1595,7 +1785,7 @@ class VoloteaScanner(BaseScanner):
 
                 print(
                     "[volotea] click forzato fallito:",
-                    exc2,
+                    repr(exc2),
                 )
 
                 return []
@@ -1605,25 +1795,35 @@ class VoloteaScanner(BaseScanner):
         )
 
         # ----------------------------------------------------
-        # ATTESA API
+        # ATTESA
         # ----------------------------------------------------
 
         print(
             "[volotea] attesa risposta Search API..."
         )
 
-        page.wait_for_timeout(
-            15000
-        )
+        try:
+
+            page.wait_for_timeout(
+                15000
+            )
+
+        except Exception:
+            pass
 
         if not risposta_json:
 
-            page.wait_for_timeout(
-                10000
-            )
+            try:
+
+                page.wait_for_timeout(
+                    15000
+                )
+
+            except Exception:
+                pass
 
         # ----------------------------------------------------
-        # RISULTATI
+        # NESSUNA RISPOSTA
         # ----------------------------------------------------
 
         if not risposta_json:
@@ -1650,7 +1850,13 @@ class VoloteaScanner(BaseScanner):
 
             return []
 
-        risultati: list[dict[str, Any]] = []
+        # ----------------------------------------------------
+        # ESTRAZIONE
+        # ----------------------------------------------------
+
+        risultati: list[
+            dict[str, Any]
+        ] = []
 
         for risposta in risposta_json:
 
@@ -1660,12 +1866,20 @@ class VoloteaScanner(BaseScanner):
                 )
             )
 
+        print(
+            "[volotea] oggetti volo trovati:",
+            len(risultati),
+        )
+
         # ----------------------------------------------------
         # DEDUPLICA
         # ----------------------------------------------------
 
         viste = set()
-        unici = []
+
+        unici: list[
+            dict[str, Any]
+        ] = []
 
         for volo in risultati:
 
@@ -1723,7 +1937,7 @@ class VoloteaScanner(BaseScanner):
         offerte: list[Offerta] = []
 
         # ----------------------------------------------------
-        # TEST INIZIALE
+        # TEST
         # ----------------------------------------------------
 
         origine = "VRN"
@@ -1751,12 +1965,16 @@ class VoloteaScanner(BaseScanner):
             data_test.isoformat(),
         )
 
+        browser: Browser | None = None
+        context: BrowserContext | None = None
+
         with sync_playwright() as p:
 
-            browser: Browser | None = None
-            context = None
-
             try:
+
+                # ------------------------------------------------
+                # BROWSER
+                # ------------------------------------------------
 
                 browser = p.chromium.launch(
                     headless=True,
@@ -1785,12 +2003,20 @@ class VoloteaScanner(BaseScanner):
 
                 page = context.new_page()
 
+                # ------------------------------------------------
+                # RICERCA
+                # ------------------------------------------------
+
                 voli = self.esegui_ricerca(
                     page,
                     origine,
                     destinazione,
                     data_test,
                 )
+
+                # ------------------------------------------------
+                # CONVERSIONE
+                # ------------------------------------------------
 
                 for volo in voli:
 
@@ -1933,6 +2159,10 @@ class VoloteaScanner(BaseScanner):
                         browser.close()
                     except Exception:
                         pass
+
+        # ----------------------------------------------------
+        # FINE
+        # ----------------------------------------------------
 
         print("")
         print("=" * 60)
