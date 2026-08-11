@@ -3,23 +3,13 @@
 Lo scanner utilizza il booking engine pubblico Volotea e
 intercetta la risposta reale della ricerca voli.
 
-Strategia:
+Le destinazioni non vengono inventate né fissate manualmente:
+per ogni aeroporto di partenza configurato viene interrogato
+il selettore aeroporti Volotea e vengono utilizzate solamente
+le destinazioni realmente disponibili.
 
-1. Apre il booking engine Volotea.
-2. Chiude il banner cookie, se presente.
-3. Seleziona un aeroporto di origine configurato in settings.origini.
-4. Legge dal selettore Volotea le destinazioni effettivamente disponibili.
-5. Scarta le destinazioni non valide o uguali all'origine.
-6. Cerca i voli solo sulle tratte realmente disponibili.
-7. Intercetta la risposta reale della ricerca voli.
-8. Estrae prezzo, orari, durata e numero volo.
-9. Converte i risultati nel modello Offerta di Flight Hunter.
-
-Non vengono utilizzati endpoint storici delle stazioni.
-
-La scansione delle tratte viene ricavata direttamente dal frontend
-Volotea, evitando di provare indiscriminatamente combinazioni
-origine/destinazione inesistenti.
+La struttura delle offerte prodotte è compatibile con
+scanners.base.
 """
 
 from __future__ import annotations
@@ -47,16 +37,16 @@ SEARCH_PATHS = (
     "/flights/search",
 )
 
-IATA_RE = re.compile(r"\b([A-Z]{3})\b")
+# Fallback utilizzati solamente se i relativi parametri non
+# sono presenti nella configurazione attuale.
+DEFAULT_DAYS_MIN = 1
+DEFAULT_DAYS_MAX = 14
+
+MAX_DESTINATIONS_PER_ORIGIN = 100
+MAX_FLIGHTS_PER_SEARCH = 1000
 
 
-# ============================================================
-# UTILITÀ
-# ============================================================
-
-def estrai_ora(
-    value: str | None,
-) -> str | None:
+def estrai_ora(value: str | None) -> str | None:
     """Estrae HH:MM da una data ISO Volotea."""
 
     if not value:
@@ -103,7 +93,7 @@ def calcola_durata(
             (a - p).total_seconds() / 60
         )
 
-        if durata < 0:
+        if durata <= 0:
             return None
 
         return durata
@@ -148,9 +138,16 @@ def estrai_prezzo(
             ):
                 continue
 
-            if (
+            passenger_type = (
                 passenger.get("passengerType")
-                != "ADT"
+                or passenger.get("type")
+            )
+
+            if passenger_type not in (
+                "ADT",
+                "adult",
+                "Adult",
+                None,
             ):
                 continue
 
@@ -168,20 +165,19 @@ def estrai_prezzo(
             valore = (
                 fare_amount.get("eurAmount")
                 or fare_amount.get("amount")
+                or fare_amount.get("value")
             )
 
             if valore is None:
                 continue
 
             try:
-
                 prezzo = float(valore)
 
             except (
                 TypeError,
                 ValueError,
             ):
-
                 continue
 
             if prezzo > 0:
@@ -200,14 +196,18 @@ def trova_voli(
 
     risultati: list[dict[str, Any]] = []
 
-    def visita(
-        value: Any,
-    ) -> None:
+    viste_id: set[int] = set()
 
-        if isinstance(
-            value,
-            dict,
-        ):
+    def visita(value: Any) -> None:
+
+        if isinstance(value, dict):
+
+            object_id = id(value)
+
+            if object_id in viste_id:
+                return
+
+            viste_id.add(object_id)
 
             if (
                 isinstance(
@@ -224,10 +224,7 @@ def trova_voli(
             for child in value.values():
                 visita(child)
 
-        elif isinstance(
-            value,
-            list,
-        ):
+        elif isinstance(value, list):
 
             for child in value:
                 visita(child)
@@ -296,13 +293,10 @@ def estrai_dati_volo(
         or []
     )
 
-    if (
-        isinstance(
-            segments,
-            list,
-        )
-        and segments
-    ):
+    if isinstance(
+        segments,
+        list,
+    ) and segments:
 
         primo_segmento = segments[0]
 
@@ -327,6 +321,9 @@ def estrai_dati_volo(
                     identifier.get(
                         "identifier"
                     )
+                    or identifier.get(
+                        "code"
+                    )
                 )
 
     durata = calcola_durata(
@@ -346,10 +343,6 @@ def estrai_dati_volo(
     }
 
 
-# ============================================================
-# SCANNER
-# ============================================================
-
 class VoloteaScanner(BaseScanner):
 
     nome = "volotea"
@@ -360,40 +353,33 @@ class VoloteaScanner(BaseScanner):
             connector=None
         )
 
-    # ========================================================
-    # DATA MINIMA
-    # ========================================================
+    # ============================================================
+    # CONFIGURAZIONE DATE
+    # ============================================================
 
     def giorni_minimi(self) -> int:
-        """Restituisce il numero minimo di giorni da oggi.
+        """Restituisce il minimo soggiorno configurato."""
 
-        Vengono controllate diverse denominazioni possibili per
-        mantenere compatibilità con eventuali impostazioni già
-        presenti nel progetto.
-
-        Se nessuna è presente viene utilizzato +1 giorno.
-        """
-
-        nomi = (
+        possibili_nomi = (
             "giorni_minimi",
-            "giorni_minimi_partenza",
+            "giorni_minimi_soggiorno",
             "min_giorni",
-            "giorni_minimi_volo",
             "min_days",
+            "soggiorno_minimo",
         )
 
-        for nome in nomi:
+        for nome in possibili_nomi:
+
+            valore = getattr(
+                settings,
+                nome,
+                None,
+            )
+
+            if valore is None:
+                continue
 
             try:
-
-                valore = getattr(
-                    settings,
-                    nome,
-                    None,
-                )
-
-                if valore is None:
-                    continue
 
                 valore = int(valore)
 
@@ -406,21 +392,92 @@ class VoloteaScanner(BaseScanner):
             ):
                 continue
 
-        return 1
+        return DEFAULT_DAYS_MIN
 
-    def data_test(self) -> date:
-        """Prima data utile utilizzabile dallo scanner."""
+    def giorni_massimi(self) -> int:
+        """Restituisce il massimo soggiorno configurato."""
+
+        possibili_nomi = (
+            "giorni_massimi",
+            "giorni_massimi_soggiorno",
+            "max_giorni",
+            "max_days",
+            "soggiorno_massimo",
+        )
+
+        for nome in possibili_nomi:
+
+            valore = getattr(
+                settings,
+                nome,
+                None,
+            )
+
+            if valore is None:
+                continue
+
+            try:
+
+                valore = int(valore)
+
+                if valore >= self.giorni_minimi():
+                    return valore
+
+            except (
+                TypeError,
+                ValueError,
+            ):
+                continue
+
+        return DEFAULT_DAYS_MAX
+
+    def data_inizio(self) -> date:
+        """Prima data utile per la ricerca."""
+
+        possibili_nomi = (
+            "giorni_anticipo_minimi",
+            "anticipo_minimo",
+            "min_days_ahead",
+            "giorni_minimi_anticipo",
+        )
+
+        for nome in possibili_nomi:
+
+            valore = getattr(
+                settings,
+                nome,
+                None,
+            )
+
+            if valore is None:
+                continue
+
+            try:
+
+                valore = int(valore)
+
+                if valore >= 0:
+                    return (
+                        date.today()
+                        + timedelta(
+                            days=valore
+                        )
+                    )
+
+            except (
+                TypeError,
+                ValueError,
+            ):
+                continue
 
         return (
             date.today()
-            + timedelta(
-                days=self.giorni_minimi()
-            )
+            + timedelta(days=1)
         )
 
-    # ========================================================
+    # ============================================================
     # COOKIE
-    # ========================================================
+    # ============================================================
 
     def chiudi_cookie(
         self,
@@ -430,6 +487,7 @@ class VoloteaScanner(BaseScanner):
 
         selettori = [
             "button:has-text('Aceptar sólo las esenciales')",
+            "button:has-text('Aceptar solo las esenciales')",
             "button:has-text('Accept only essential')",
             "button:has-text('Accept only necessary')",
             "button:has-text('Only essential')",
@@ -482,15 +540,15 @@ class VoloteaScanner(BaseScanner):
             except Exception:
                 continue
 
-    # ========================================================
-    # APERTURA SELETTORE
-    # ========================================================
+    # ============================================================
+    # SELETTORE AEROPORTI
+    # ============================================================
 
     def apri_selettore_aeroporti(
         self,
         page: Page,
     ) -> bool:
-        """Apre il selettore aeroporti del frontend Volotea."""
+        """Apre il selettore aeroporti Volotea."""
 
         trigger_selettori = [
             "#input-text_sf-origin:visible",
@@ -530,7 +588,7 @@ class VoloteaScanner(BaseScanner):
                     )
 
                     page.wait_for_timeout(
-                        1200
+                        1000
                     )
 
                     if (
@@ -553,9 +611,100 @@ class VoloteaScanner(BaseScanner):
 
         return False
 
-    # ========================================================
-    # SELEZIONE AEROPORTO
-    # ========================================================
+    def ottieni_testo_elemento(
+        self,
+        elemento,
+    ) -> str:
+        """Restituisce il testo visibile di un elemento."""
+
+        try:
+            return (
+                elemento.inner_text()
+                .strip()
+            )
+        except Exception:
+            return ""
+
+    def estrai_codici_da_opzioni(
+        self,
+        page: Page,
+    ) -> list[str]:
+        """Estrae i codici IATA dalle opzioni attualmente visibili."""
+
+        codici: list[str] = []
+
+        selettori = [
+            "[role='option']:visible",
+            "li:visible",
+            "button:visible",
+        ]
+
+        for selettore in selettori:
+
+            try:
+
+                elementi = page.locator(
+                    selettore
+                )
+
+                count = elementi.count()
+
+                for i in range(count):
+
+                    elemento = elementi.nth(i)
+
+                    if not elemento.is_visible():
+                        continue
+
+                    testo = self.ottieni_testo_elemento(
+                        elemento
+                    )
+
+                    if not testo:
+                        continue
+
+                    righe = [
+                        r.strip().upper()
+                        for r in testo.splitlines()
+                        if r.strip()
+                    ]
+
+                    for riga in righe:
+
+                        if re.fullmatch(
+                            r"[A-Z]{3}",
+                            riga,
+                        ):
+                            codici.append(
+                                riga
+                            )
+
+                    match = re.search(
+                        r"\b([A-Z]{3})\b",
+                        texto_normalizzato(testo),
+                    )
+
+                    if match:
+                        codici.append(
+                            match.group(1).upper()
+                        )
+
+            except Exception:
+                continue
+
+        risultato = []
+
+        viste = set()
+
+        for codice in codici:
+
+            if codice in viste:
+                continue
+
+            viste.add(codice)
+            risultato.append(codice)
+
+        return risultato
 
     def seleziona_aeroporto(
         self,
@@ -649,16 +798,9 @@ class VoloteaScanner(BaseScanner):
                     if not elemento.is_visible():
                         continue
 
-                    try:
-
-                        testo = (
-                            elemento.inner_text()
-                            .strip()
-                        )
-
-                    except Exception:
-
-                        continue
+                    testo = self.ottieni_testo_elemento(
+                        elemento
+                    )
 
                     if not testo:
                         continue
@@ -674,15 +816,18 @@ class VoloteaScanner(BaseScanner):
                         for r in righe
                     )
 
-                    contiene_codice = (
-                        codice in testo.upper()
+                    contiene_codice = bool(
+                        re.search(
+                            rf"\b{re.escape(codice)}\b",
+                            testo.upper(),
+                        )
                     )
 
                     if not (
                         match_esatto
                         or (
                             contiene_codice
-                            and len(testo) < 200
+                            and len(testo) < 250
                         )
                     ):
                         continue
@@ -711,56 +856,10 @@ class VoloteaScanner(BaseScanner):
                             )
 
                         except Exception:
-
                             continue
 
                     page.wait_for_timeout(
-                        1000
-                    )
-
-                    return True
-
-            except Exception:
-                continue
-
-        selettori_iata = [
-            "p.c-iata-tag__text:visible",
-            "[class*='iata']:visible",
-            "[class*='IATA']:visible",
-        ]
-
-        for selettore in selettori_iata:
-
-            try:
-
-                elementi = page.locator(
-                    selettore
-                )
-
-                for i in range(
-                    elementi.count()
-                ):
-
-                    elemento = elementi.nth(i)
-
-                    if not elemento.is_visible():
-                        continue
-
-                    testo = (
-                        elemento.inner_text()
-                        .strip()
-                    )
-
-                    if testo.upper() != codice:
-                        continue
-
-                    elemento.click(
-                        force=True,
-                        timeout=5000,
-                    )
-
-                    page.wait_for_timeout(
-                        1000
+                        800
                     )
 
                     return True
@@ -774,40 +873,79 @@ class VoloteaScanner(BaseScanner):
 
         return False
 
-    # ========================================================
-    # ESTRAZIONE DESTINAZIONI
-    # ========================================================
+    # ============================================================
+    # SCOPERTA ROTTE
+    # ============================================================
 
-    def estrai_iata_da_testo(
-        self,
-        testo: str,
-    ) -> list[str]:
-        """Estrae codici IATA da un testo visibile."""
-
-        risultati: list[str] = []
-
-        if not testo:
-            return risultati
-
-        for match in IATA_RE.findall(
-            testo.upper()
-        ):
-
-            if match not in risultati:
-                risultati.append(match)
-
-        return risultati
-
-    def raccogli_destinazioni_visibili(
+    def scopri_destinazioni(
         self,
         page: Page,
         origine: str,
     ) -> list[str]:
-        """Raccoglie le destinazioni mostrate dal selettore Volotea."""
+        """Scopre le destinazioni disponibili per un'origine.
 
-        origine = origine.upper()
+        La lista viene ricavata dal selettore Volotea, evitando
+        di tentare tratte inesistenti.
+        """
 
-        destinazioni: list[str] = []
+        print(
+            f"[volotea] ricerca destinazioni attive da {origine}"
+        )
+
+        if not self.apri_selettore_aeroporti(
+            page
+        ):
+            return []
+
+        if not self.seleziona_aeroporto(
+            page,
+            "origin",
+            origine,
+        ):
+            return []
+
+        page.wait_for_timeout(
+            1000
+        )
+
+        destination = page.locator(
+            "#destination:visible"
+        ).first
+
+        if destination.count() == 0:
+
+            print(
+                "[volotea] campo destination non trovato."
+            )
+
+            return []
+
+        try:
+
+            destination.click(
+                force=True,
+                timeout=5000,
+            )
+
+            destination.fill(
+                "",
+                timeout=5000,
+            )
+
+            page.wait_for_timeout(
+                1500
+            )
+
+        except Exception as exc:
+
+            print(
+                "[volotea] errore apertura destinazioni:",
+                repr(exc),
+            )
+
+            return []
+
+        destinazioni = []
 
         selettori = [
             "[role='option']:visible",
@@ -823,98 +961,6 @@ class VoloteaScanner(BaseScanner):
                     selettore
                 )
 
-                count = elementi.count()
-
-                for i in range(count):
-
-                    elemento = elementi.nth(i)
-
-                    if not elemento.is_visible():
-                        continue
-
-                    try:
-
-                        testo = (
-                            elemento.inner_text()
-                            .strip()
-                        )
-
-                    except Exception:
-
-                        continue
-
-                    if not testo:
-                        continue
-
-                    if len(testo) > 300:
-                        continue
-
-                    righe = [
-                        r.strip()
-                        for r in testo.splitlines()
-                        if r.strip()
-                    ]
-
-                    candidati: list[str] = []
-
-                    # Prima proviamo una riga che sia
-                    # esattamente un codice IATA.
-
-                    for riga in righe:
-
-                        if re.fullmatch(
-                            r"[A-Z]{3}",
-                            riga.upper(),
-                        ):
-                            candidati.append(
-                                riga.upper()
-                            )
-
-                    # Poi analizziamo il testo completo.
-                    if not candidati:
-
-                        candidati.extend(
-                            self.estrai_iata_da_testo(
-                                testo
-                            )
-                        )
-
-                    for codice in candidati:
-
-                        if codice == origine:
-                            continue
-
-                        if codice not in destinazioni:
-                            destinazioni.append(
-                                codice
-                            )
-
-            except Exception:
-                continue
-
-        return destinazioni
-
-    def apri_selettore_destinazione(
-        self,
-        page: Page,
-    ) -> bool:
-        """Apre il campo destinazione."""
-
-        selettori = [
-            "#destination:visible",
-            "input[id='destination']:visible",
-            "input[placeholder*='destination' i]:visible",
-            "input[placeholder*='airport' i]:visible",
-        ]
-
-        for selettore in selettori:
-
-            try:
-
-                elementi = page.locator(
-                    selettore
-                )
-
                 for i in range(
                     elementi.count()
                 ):
@@ -924,122 +970,60 @@ class VoloteaScanner(BaseScanner):
                     if not elemento.is_visible():
                         continue
 
-                    elemento.click(
-                        force=True,
-                        timeout=5000,
+                    testo = self.ottieni_testo_elemento(
+                        elemento
                     )
 
-                    page.wait_for_timeout(
-                        1000
+                    if not testo:
+                        continue
+
+                    codice = estrai_primo_iata(
+                        testo
                     )
 
-                    return True
+                    if not codice:
+                        continue
 
-            except Exception:
-                continue
+                    if codice == origine:
+                        continue
 
-        return False
+                    if codice in destinazioni:
+                        continue
 
-    def scopri_destinazioni(
-        self,
-        page: Page,
-        origine: str,
-    ) -> list[str]:
-        """Scopre le destinazioni realmente disponibili per l'origine."""
+                    print(
+                        "[volotea] destinazione attiva:",
+                        repr(testo),
+                    )
 
-        print(
-            f"[volotea] ricerca destinazioni disponibili da {origine}"
-        )
-
-        destinazioni: list[str] = []
-
-        # ----------------------------------------------------
-        # Dopo la selezione dell'origine il frontend può già
-        # mostrare le destinazioni.
-        # ----------------------------------------------------
-
-        destinazioni.extend(
-            self.raccogli_destinazioni_visibili(
-                page,
-                origine,
-            )
-        )
-
-        # ----------------------------------------------------
-        # Proviamo anche ad aprire esplicitamente il campo
-        # destinazione.
-        # ----------------------------------------------------
-
-        if self.apri_selettore_destinazione(
-            page
-        ):
-
-            page.wait_for_timeout(
-                1000
-            )
-
-            nuove = (
-                self.raccogli_destinazioni_visibili(
-                    page,
-                    origine,
-                )
-            )
-
-            for codice in nuove:
-
-                if codice not in destinazioni:
                     destinazioni.append(
                         codice
                     )
 
-        # ----------------------------------------------------
-        # Elimina valori palesemente non utili.
-        # ----------------------------------------------------
+                    if (
+                        len(destinazioni)
+                        >= MAX_DESTINATIONS_PER_ORIGIN
+                    ):
+                        break
 
-        filtrate: list[str] = []
+                if (
+                    len(destinazioni)
+                    >= MAX_DESTINATIONS_PER_ORIGIN
+                ):
+                    break
 
-        for codice in destinazioni:
-
-            codice = codice.upper()
-
-            if not re.fullmatch(
-                r"[A-Z]{3}",
-                codice,
-            ):
+            except Exception:
                 continue
-
-            if codice == origine.upper():
-                continue
-
-            if codice not in filtrate:
-                filtrate.append(
-                    codice
-                )
 
         print(
-            f"[volotea] destinazioni disponibili da "
-            f"{origine}: {len(filtrate)}"
+            f"[volotea] {origine}: "
+            f"{len(destinazioni)} destinazioni attive trovate"
         )
 
-        if filtrate:
+        return destinazioni
 
-            print(
-                "[volotea] tratte disponibili:",
-                ", ".join(filtrate),
-            )
-
-        else:
-
-            print(
-                f"[volotea] nessuna destinazione rilevata "
-                f"per {origine}"
-            )
-
-        return filtrate
-
-    # ========================================================
-    # DATA
-    # ========================================================
+    # ============================================================
+    # DATE
+    # ============================================================
 
     def seleziona_data(
         self,
@@ -1091,16 +1075,11 @@ class VoloteaScanner(BaseScanner):
             )
 
         except Exception:
-
             return False
 
         giorno = str(
             data_partenza.day
         )
-
-        # ----------------------------------------------------
-        # aria-label
-        # ----------------------------------------------------
 
         selettori_data = [
             (
@@ -1137,6 +1116,17 @@ class VoloteaScanner(BaseScanner):
                     if not elemento.is_visible():
                         continue
 
+                    testo = self.ottieni_testo_elemento(
+                        elemento
+                    )
+
+                    if (
+                        testo
+                        and testo != giorno
+                        and giorno not in testo
+                    ):
+                        continue
+
                     elemento.click(
                         force=True,
                         timeout=5000,
@@ -1150,10 +1140,6 @@ class VoloteaScanner(BaseScanner):
 
             except Exception:
                 continue
-
-        # ----------------------------------------------------
-        # Fallback giorno esatto
-        # ----------------------------------------------------
 
         try:
 
@@ -1172,16 +1158,9 @@ class VoloteaScanner(BaseScanner):
                 if not elemento.is_visible():
                     continue
 
-                try:
-
-                    testo = (
-                        elemento.inner_text()
-                        .strip()
-                    )
-
-                except Exception:
-
-                    continue
+                testo = self.ottieni_testo_elemento(
+                    elemento
+                )
 
                 if testo != giorno:
                     continue
@@ -1207,9 +1186,9 @@ class VoloteaScanner(BaseScanner):
 
         return False
 
-    # ========================================================
-    # PULSANTE RICERCA
-    # ========================================================
+    # ============================================================
+    # RICERCA
+    # ============================================================
 
     def trova_pulsante_ricerca(
         self,
@@ -1241,20 +1220,11 @@ class VoloteaScanner(BaseScanner):
                 if not button.is_visible():
                     continue
 
-                try:
+                testo = self.ottieni_testo_elemento(
+                    button
+                )
 
-                    testo = (
-                        button.inner_text()
-                        .strip()
-                    )
-
-                except Exception:
-
-                    continue
-
-                if pattern.search(
-                    testo
-                ):
+                if pattern.search(testo):
                     return button
 
         except Exception:
@@ -1299,10 +1269,6 @@ class VoloteaScanner(BaseScanner):
 
         return None
 
-    # ========================================================
-    # RICERCA SINGOLA TRATTA
-    # ========================================================
-
     def esegui_ricerca(
         self,
         page: Page,
@@ -1342,9 +1308,7 @@ class VoloteaScanner(BaseScanner):
                     return
 
                 try:
-
                     payload = response.json()
-
                 except Exception:
                     return
 
@@ -1378,7 +1342,7 @@ class VoloteaScanner(BaseScanner):
             return []
 
         page.wait_for_timeout(
-            10000
+            8000
         )
 
         self.chiudi_cookie(
@@ -1408,6 +1372,11 @@ class VoloteaScanner(BaseScanner):
             page,
             data_partenza,
         ):
+            print(
+                f"[volotea] data non selezionata: "
+                f"{data_partenza.isoformat()}"
+            )
+
             return []
 
         pulsante = (
@@ -1470,63 +1439,17 @@ class VoloteaScanner(BaseScanner):
                 )
             )
 
+            if (
+                len(risultati)
+                >= MAX_FLIGHTS_PER_SEARCH
+            ):
+                break
+
         return risultati
 
-    # ========================================================
-    # CREAZIONE PAGINA DI RICERCA
-    # ========================================================
-
-    def prepara_pagina(
-        self,
-        context: BrowserContext,
-    ) -> Page | None:
-        """Crea e prepara una nuova pagina Volotea."""
-
-        page = context.new_page()
-
-        try:
-
-            page.goto(
-                BOOKING_URL,
-                wait_until="domcontentloaded",
-                timeout=60000,
-            )
-
-            page.wait_for_timeout(
-                10000
-            )
-
-            self.chiudi_cookie(
-                page
-            )
-
-            if not self.apri_selettore_aeroporti(
-                page
-            ):
-
-                page.close()
-
-                return None
-
-            return page
-
-        except Exception as exc:
-
-            print(
-                "[volotea] errore preparazione pagina:",
-                repr(exc),
-            )
-
-            try:
-                page.close()
-            except Exception:
-                pass
-
-            return None
-
-    # ========================================================
+    # ============================================================
     # SCAN
-    # ========================================================
+    # ============================================================
 
     def scan(
         self,
@@ -1542,32 +1465,34 @@ class VoloteaScanner(BaseScanner):
 
         offerte: list[Offerta] = []
 
-        data_test = self.data_test()
+        data_inizio = self.data_inizio()
+
+        giorni_minimi = self.giorni_minimi()
+        giorni_massimi = self.giorni_massimi()
 
         print(
-            "[volotea] data minima utilizzata:",
-            data_test.isoformat(),
+            "[volotea] data iniziale:",
+            data_inizio.isoformat(),
         )
 
         print(
-            "[volotea] giorni minimi:",
-            self.giorni_minimi(),
+            "[volotea] soggiorno minimo:",
+            giorni_minimi,
+            "giorni",
+        )
+
+        print(
+            "[volotea] soggiorno massimo:",
+            giorni_massimi,
+            "giorni",
         )
 
         browser: Browser | None = None
         context: BrowserContext | None = None
 
-        # ----------------------------------------------------
-        # DEDUPLICA TRATTE
-        # ----------------------------------------------------
+        with sync_playwright() as p:
 
-        tratte_viste: set[
-            tuple[str, str]
-        ] = set()
-
-        try:
-
-            with sync_playwright() as p:
+            try:
 
                 browser = p.chromium.launch(
                     headless=True,
@@ -1594,140 +1519,104 @@ class VoloteaScanner(BaseScanner):
                     ),
                 )
 
-                # ------------------------------------------------
-                # PER OGNI ORIGINE
-                # ------------------------------------------------
+                # ==================================================
+                # 1. SCOPERTA DELLE ROTTE
+                # ==================================================
+
+                rotte: dict[str, list[str]] = {}
 
                 for origine in self.origini:
 
-                    origine = str(
-                        origine
-                    ).upper().strip()
+                    origine = origine.upper()
 
-                    if not re.fullmatch(
-                        r"[A-Z]{3}",
-                        origine,
-                    ):
-                        print(
-                            "[volotea] origine ignorata:",
-                            origine,
-                        )
-                        continue
-
-                    print("")
-                    print(
-                        "=" * 60
-                    )
-
-                    print(
-                        f"[volotea] analisi origine: {origine}"
-                    )
-
-                    print(
-                        "=" * 60
-                    )
-
-                    # --------------------------------------------
-                    # PAGINA USATA PER SCOPRIRE LE TRATTE
-                    # --------------------------------------------
-
-                    pagina_discovery = (
-                        self.prepara_pagina(
-                            context
-                        )
-                    )
-
-                    if pagina_discovery is None:
-                        continue
+                    page = context.new_page()
 
                     try:
 
-                        if not self.seleziona_aeroporto(
-                            pagina_discovery,
-                            "origin",
-                            origine,
-                        ):
+                        page.goto(
+                            BOOKING_URL,
+                            wait_until="domcontentloaded",
+                            timeout=60000,
+                        )
 
-                            print(
-                                f"[volotea] impossibile selezionare "
-                                f"origine {origine}"
-                            )
+                        page.wait_for_timeout(
+                            8000
+                        )
 
-                            continue
+                        self.chiudi_cookie(
+                            page
+                        )
 
                         destinazioni = (
                             self.scopri_destinazioni(
-                                pagina_discovery,
+                                page,
                                 origine,
                             )
+                        )
+
+                        rotte[origine] = (
+                            destinazioni
                         )
 
                     except Exception as exc:
 
                         print(
                             f"[volotea] errore scoperta "
-                            f"tratte da {origine}:",
+                            f"rotte da {origine}:",
                             repr(exc),
                         )
 
-                        destinazioni = []
+                        rotte[origine] = []
 
                     finally:
 
                         try:
-                            pagina_discovery.close()
+                            page.close()
                         except Exception:
                             pass
 
-                    # --------------------------------------------
-                    # Se il frontend non restituisce destinazioni
-                    # NON inventiamo tratte.
-                    # --------------------------------------------
+                print("")
+                print(
+                    "[volotea] riepilogo rotte attive:"
+                )
 
-                    if not destinazioni:
+                for origine, destinazioni in rotte.items():
 
-                        print(
-                            f"[volotea] nessuna tratta verificabile "
-                            f"da {origine}: origine saltata."
-                        )
+                    print(
+                        f"[volotea] {origine}: "
+                        f"{len(destinazioni)} destinazioni"
+                    )
 
-                        continue
+                # ==================================================
+                # 2. RICERCA VOLI
+                # ==================================================
 
-                    # --------------------------------------------
-                    # RICERCA DELLE TRATTE
-                    # --------------------------------------------
+                for origine, destinazioni in rotte.items():
 
                     for destinazione in destinazioni:
 
-                        destinazione = (
-                            destinazione.upper().strip()
-                        )
-
-                        if destinazione == origine:
-                            continue
-
-                        if not re.fullmatch(
-                            r"[A-Z]{3}",
-                            destinazione,
+                        if (
+                            origine
+                            == destinazione
                         ):
                             continue
 
-                        chiave_tratta = (
-                            origine,
-                            destinazione,
-                        )
-
-                        if chiave_tratta in tratte_viste:
-                            continue
-
-                        tratte_viste.add(
-                            chiave_tratta
-                        )
-
                         print("")
                         print(
-                            f"[volotea] ricerca "
+                            f"[volotea] rotta attiva "
                             f"{origine} -> {destinazione}"
+                        )
+
+                        # Per ogni rotta cerchiamo la prima data
+                        # configurata.
+                        #
+                        # I parametri di soggiorno vengono mantenuti
+                        # disponibili per la successiva estensione
+                        # alla ricerca delle combinazioni andata/
+                        # ritorno.
+
+                        data_partenza = (
+                            data_inizio
                         )
 
                         page = context.new_page()
@@ -1738,18 +1627,10 @@ class VoloteaScanner(BaseScanner):
                                 page,
                                 origine,
                                 destinazione,
-                                data_test,
+                                data_partenza,
                             )
 
-                            print(
-                                f"[volotea] voli ricevuti "
-                                f"{origine}->{destinazione}:",
-                                len(voli),
-                            )
-
-                            viste_voli: set[
-                                tuple[Any, ...]
-                            ] = set()
+                            viste = set()
 
                             for volo in voli:
 
@@ -1780,7 +1661,7 @@ class VoloteaScanner(BaseScanner):
                                 ):
                                     continue
 
-                                chiave_volo = (
+                                chiave = (
                                     dati["origine"],
                                     dati["destinazione"],
                                     dati["data_partenza"],
@@ -1789,64 +1670,11 @@ class VoloteaScanner(BaseScanner):
                                     dati["prezzo"],
                                 )
 
-                                if (
-                                    chiave_volo
-                                    in viste_voli
-                                ):
+                                if chiave in viste:
                                     continue
 
-                                viste_voli.add(
-                                    chiave_volo
-                                )
-
-                                print("")
-                                print(
-                                    "[volotea] VOLO TROVATO"
-                                )
-
-                                print(
-                                    "  Origine:",
-                                    dati["origine"],
-                                )
-
-                                print(
-                                    "  Destinazione:",
-                                    dati["destinazione"],
-                                )
-
-                                print(
-                                    "  Data:",
-                                    dati["data_partenza"],
-                                )
-
-                                print(
-                                    "  Partenza:",
-                                    estrai_ora(
-                                        dati["partenza"]
-                                    ),
-                                )
-
-                                print(
-                                    "  Arrivo:",
-                                    estrai_ora(
-                                        dati["arrivo"]
-                                    ),
-                                )
-
-                                print(
-                                    "  Durata:",
-                                    dati["durata"],
-                                    "minuti",
-                                )
-
-                                print(
-                                    "  Numero volo:",
-                                    dati["numero_volo"],
-                                )
-
-                                print(
-                                    "  Prezzo:",
-                                    dati["prezzo"],
+                                viste.add(
+                                    chiave
                                 )
 
                                 offerte.append(
@@ -1890,6 +1718,12 @@ class VoloteaScanner(BaseScanner):
                                     )
                                 )
 
+                            print(
+                                f"[volotea] {origine} -> "
+                                f"{destinazione}: "
+                                f"{len(viste)} voli trovati"
+                            )
+
                         except Exception as exc:
 
                             print(
@@ -1907,84 +1741,84 @@ class VoloteaScanner(BaseScanner):
                             except Exception:
                                 pass
 
-        except Exception as exc:
+            except Exception as exc:
 
-            print(
-                "[volotea] ERRORE SCANNER:",
-                repr(exc),
-            )
+                print(
+                    "[volotea] ERRORE SCANNER:",
+                    repr(exc),
+                )
 
-            traceback.print_exc()
+                traceback.print_exc()
 
-        finally:
+            finally:
 
-            if context is not None:
+                if context is not None:
 
-                try:
-                    context.close()
-                except Exception:
-                    pass
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
 
-            if browser is not None:
+                if browser is not None:
 
-                try:
-                    browser.close()
-                except Exception:
-                    pass
-
-        # ----------------------------------------------------
-        # DEDUPLICA GLOBALE
-        # ----------------------------------------------------
-
-        viste_finali: set[
-            tuple[Any, ...]
-        ] = set()
-
-        offerte_uniche: list[
-            Offerta
-        ] = []
-
-        for offerta in offerte:
-
-            chiave = (
-                offerta.aeroporto_partenza,
-                offerta.aeroporto_arrivo,
-                offerta.data_partenza,
-                offerta.ora_partenza,
-                offerta.ora_arrivo,
-                offerta.prezzo,
-            )
-
-            if chiave in viste_finali:
-                continue
-
-            viste_finali.add(
-                chiave
-            )
-
-            offerte_uniche.append(
-                offerta
-            )
-
-        offerte_uniche.sort(
-            key=lambda o: o.prezzo
-        )
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
 
         print("")
-        print("=" * 60)
         print(
             "VOLOTEA COMPLETATO"
-        )
-        print("=" * 60)
-
-        print(
-            "Tratte verificate:",
-            len(tratte_viste),
         )
 
         print(
             "Offerte prodotte:",
-            len(offerte_uniche),
+            len(offerte),
         )
 
-        return offerte_uniche
+        return offerte
+
+
+def texto_normalizzato(
+    testo: str,
+) -> str:
+    """Normalizza il testo per la ricerca del codice IATA."""
+
+    return re.sub(
+        r"\s+",
+        " ",
+        testo.upper(),
+    )
+
+
+def estrai_primo_iata(
+    testo: str,
+) -> str | None:
+    """Estrae il primo codice IATA plausibile dal testo."""
+
+    if not testo:
+        return None
+
+    righe = [
+        r.strip().upper()
+        for r in testo.splitlines()
+        if r.strip()
+    ]
+
+    for riga in righe:
+
+        if re.fullmatch(
+            r"[A-Z]{3}",
+            riga,
+        ):
+            return riga
+
+    match = re.search(
+        r"\b([A-Z]{3})\b",
+        texto_normalizzato(testo),
+    )
+
+    if match:
+        return match.group(1).upper()
+
+    return None
