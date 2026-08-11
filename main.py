@@ -9,125 +9,190 @@ from scanners import SCANNERS
 from scanners.returns import aggiungi_ritorni
 from connectors.base import BaseConnector
 
+def importa_offerte(
+offerte,
+nome_scanner,
+) -> int:
+"""Importa le offerte prodotte da uno scanner."""
+
+```
+if not offerte:
+    print(
+        f"[{nome_scanner}] Nessuna offerta da importare."
+    )
+    return 0
+
+totale = import_offers(
+    [
+        o.to_payload()
+        for o in offerte
+    ]
+)
+
+print(
+    f"[{nome_scanner}] Totale offerte importate: {totale}"
+)
+
+return totale
+```
+
+def deduplica_offerte(
+offerte,
+):
+"""Deduplica le offerte mantenendo quelle più economiche."""
+
+```
+viste = set()
+uniche = []
+
+for o in offerte:
+
+    chiave = (
+        o.aeroporto_partenza,
+        o.aeroporto_arrivo,
+        o.destinazione,
+        o.data_partenza,
+        o.prezzo,
+    )
+
+    if chiave in viste:
+        continue
+
+    viste.add(chiave)
+    uniche.append(o)
+
+uniche.sort(
+    key=lambda o: o.prezzo
+)
+
+return uniche
+```
 
 def main() -> int:
 
-    settings.validate()
+```
+settings.validate()
 
-    tutte = []
+totale_importate = 0
 
-    for nome, factory in SCANNERS.items():
+# ============================================================
+# ESECUZIONE SCANNER IN ORDINE
+# ============================================================
 
-        try:
+for nome, factory in SCANNERS.items():
 
-            scanner = factory()
-
-            trovate = scanner.run()
-
-            print(
-                f"[{nome}] offerte trovate: {len(trovate)}"
-            )
-
-            tutte.extend(trovate)
-
-        except Exception:
-
-            print(
-                f"[{nome}] errore durante la scansione:",
-                file=sys.stderr
-            )
-
-            traceback.print_exc()
-
-    if not tutte:
-
-        print(
-            "Nessuna offerta trovata: niente da importare."
-        )
-
-        return 0
-
-    # ========================================================
-    # DEDUPLICA GLOBALE
-    # ========================================================
-
-    viste = set()
-
-    uniche = []
-
-    for o in tutte:
-
-        chiave = (
-            o.aeroporto_partenza,
-            o.aeroporto_arrivo,
-            o.destinazione,
-            o.data_partenza,
-            o.prezzo
-        )
-
-        if chiave in viste:
-            continue
-
-        viste.add(chiave)
-
-        uniche.append(o)
-
-    uniche.sort(
-        key=lambda o: o.prezzo
-    )
-
-    # ========================================================
-    # RICERCA VOLI DI RITORNO
-    # ========================================================
-
+    print("")
+    print("=" * 60)
     print(
-        "Ricerca ritorni Ryanair in corso..."
+        f"AVVIO SCANNER: {nome.upper()}"
     )
-
-    connector = BaseConnector(
-        nome="returns"
-    )
+    print("=" * 60)
 
     try:
 
-        uniche = aggiungi_ritorni(
-            uniche,
-            connector
+        scanner = factory()
+
+        trovate = scanner.run()
+
+        print(
+            f"[{nome}] offerte trovate: {len(trovate)}"
         )
 
-    finally:
+        if not trovate:
+            print(
+                f"[{nome}] nessuna offerta prodotta."
+            )
+            continue
 
-        connector.close()
+        # ====================================================
+        # RYANAIR
+        #
+        # I ritorni devono essere cercati SUBITO dopo
+        # le offerte Ryanair e PRIMA di qualsiasi altro
+        # scanner.
+        # ====================================================
 
-    tot_ritorni = sum(
-        len(o.ritorni)
-        for o in uniche
-    )
+        if nome.lower() == "ryanair":
 
-    print(
-        f"Ritorni trovati: {tot_ritorni}"
-    )
+            print("")
+            print("=" * 60)
+            print(
+                "RICERCA RITORNI RYANAIR"
+            )
+            print("=" * 60)
 
-    # ========================================================
-    # IMPORTAZIONE
-    # ========================================================
+            connector = BaseConnector(
+                nome="returns"
+            )
 
-    totale = import_offers(
-        [
-            o.to_payload()
-            for o in uniche
-        ]
-    )
+            try:
 
-    print(
-        f"Totale offerte importate: {totale}"
-    )
+                trovate = aggiungi_ritorni(
+                    trovate,
+                    connector,
+                )
 
-    return 0
+            finally:
 
+                connector.close()
 
-if __name__ == "__main__":
+            tot_ritorni = sum(
+                len(o.ritorni)
+                for o in trovate
+            )
 
-    sys.exit(
-        main()
-    )
+            print(
+                f"Ritorni Ryanair trovati: {tot_ritorni}"
+            )
+
+        # ====================================================
+        # DEDUPLICA
+        # ====================================================
+
+        trovate = deduplica_offerte(
+            trovate
+        )
+
+        # ====================================================
+        # IMPORTAZIONE IMMEDIATA
+        #
+        # Ryanair viene quindi importato con i suoi ritorni
+        # prima che parta Volotea.
+        # ====================================================
+
+        totale_importate += importa_offerte(
+            trovate,
+            nome,
+        )
+
+    except Exception:
+
+        print(
+            f"[{nome}] errore durante la scansione:",
+            file=sys.stderr,
+        )
+
+        traceback.print_exc()
+
+# ============================================================
+# FINE
+# ============================================================
+
+print("")
+print("=" * 60)
+print(
+    "FLIGHT HUNTER COMPLETATO"
+)
+print("=" * 60)
+
+print(
+    f"Totale offerte importate: {totale_importate}"
+)
+
+return 0
+```
+
+if **name** == "**main**":
+sys.exit(
+main()
+)
