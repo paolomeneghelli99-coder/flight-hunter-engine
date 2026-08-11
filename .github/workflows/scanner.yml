@@ -45,12 +45,12 @@ jobs:
           python -m pip install -r requirements.txt
 
           echo ""
-          echo "Installazione Chromium per Playwright..."
+          echo "Installazione Chromium Playwright..."
 
           python -m playwright install --with-deps chromium
 
           echo ""
-          echo "Playwright + Chromium installati correttamente."
+          echo "Dipendenze installate correttamente."
 
       - name: Check repository
         run: |
@@ -77,6 +77,12 @@ jobs:
           echo "OK: cartella scanners presente"
 
           find scanners -maxdepth 2 -type f | sort
+
+          echo ""
+          echo "Controllo scanner Volotea..."
+
+          test -f scanners/volotea.py
+          echo "OK: scanners/volotea.py presente"
 
       - name: Check required secrets
         run: |
@@ -256,7 +262,9 @@ jobs:
           if remaining <= 0:
               print("")
               print("ERRORE: JWT GIÀ SCADUTO")
-              print("Il token ottenuto da Supabase non è utilizzabile.")
+              print(
+                  "Il token ottenuto da Supabase non è utilizzabile."
+              )
               raise SystemExit(1)
 
           if remaining < 60:
