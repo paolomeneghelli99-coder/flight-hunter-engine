@@ -11,8 +11,10 @@ Per ogni aeroporto di partenza configurato viene interrogato
 il selettore aeroporti Volotea e vengono utilizzate solamente
 le destinazioni realmente disponibili.
 
-La struttura delle offerte prodotte è compatibile con
-scanners.base.
+Le destinazioni indicate da Volotea come "Connection" vengono
+escluse perché non rappresentano un collegamento diretto.
+
+La struttura delle offerte prodotte è compatibile con scanners.base.
 """
 
 from __future__ import annotations
@@ -390,6 +392,49 @@ def estrai_dati_volo(
     }
 
 
+def codigo_gia_presente(
+    valori: list[str],
+    codice: str,
+) -> bool:
+    """Controlla se un codice IATA è già presente."""
+
+    return codice in valori
+
+
+def valor_normalizzato(
+    valore: str,
+) -> str:
+    """Normalizza un valore testuale per i confronti."""
+
+    return re.sub(
+        r"\s+",
+        " ",
+        valore.upper(),
+    )
+
+
+def destinazione_ha_connection(
+    testo: str,
+) -> bool:
+    """Verifica se Volotea indica la destinazione come connessione."""
+
+    if not testo:
+        return False
+
+    normalizzato = valor_normalizzato(
+        testo
+    )
+
+    # Volotea nel selettore mostra esplicitamente
+    # "Connection" per le destinazioni non dirette.
+    return bool(
+        re.search(
+            r"\bCONNECTION\b",
+            normalizzato,
+        )
+    )
+
+
 # ============================================================
 # SCANNER VOLOTEA
 # ============================================================
@@ -526,7 +571,9 @@ class VoloteaScanner(BaseScanner):
 
         return (
             date.today()
-            + timedelta(days=1)
+            + timedelta(
+                days=1
+            )
         )
 
     # ========================================================
@@ -855,7 +902,7 @@ class VoloteaScanner(BaseScanner):
         page: Page,
         origine: str,
     ) -> list[str]:
-        """Scopre solamente le destinazioni attive da origine."""
+        """Scopre solamente le destinazioni dirette realmente disponibili."""
 
         print(
             f"[volotea] ricerca destinazioni attive da {origine}"
@@ -864,6 +911,9 @@ class VoloteaScanner(BaseScanner):
         if not self.apri_selettore_aeroporti(
             page
         ):
+            print(
+                f"[volotea] impossibile aprire selettore per {origine}"
+            )
             return []
 
         if not self.seleziona_aeroporto(
@@ -871,6 +921,9 @@ class VoloteaScanner(BaseScanner):
             "origin",
             origine,
         ):
+            print(
+                f"[volotea] {origine}: aeroporto non disponibile su Volotea."
+            )
             return []
 
         page.wait_for_timeout(
@@ -930,9 +983,9 @@ class VoloteaScanner(BaseScanner):
                     selettore
                 )
 
-                for i in range(
-                    elementi.count()
-                ):
+                count = elementi.count()
+
+                for i in range(count):
 
                     elemento = elementi.nth(i)
 
@@ -954,6 +1007,28 @@ class VoloteaScanner(BaseScanner):
                         continue
 
                     if codice == origine:
+                        continue
+
+                    # ==================================================
+                    # IMPORTANTE:
+                    # Volotea mostra anche destinazioni raggiungibili
+                    # con una connessione.
+                    #
+                    # Esempio:
+                    # BOD ... From €149 ... Connection
+                    #
+                    # Queste NON sono rotte dirette e quindi non devono
+                    # essere sottoposte allo scanner.
+                    # ==================================================
+
+                    if destinazione_ha_connection(
+                        testo
+                    ):
+                        print(
+                            "[volotea] destinazione esclusa "
+                            "(Connection):",
+                            repr(testo),
+                        )
                         continue
 
                     if codigo_gia_presente(
@@ -1041,9 +1116,11 @@ class VoloteaScanner(BaseScanner):
         )
 
         if departure is None:
+
             print(
                 "[volotea] campo departure non trovato."
             )
+
             return False
 
         print(
@@ -1083,7 +1160,10 @@ class VoloteaScanner(BaseScanner):
             data_partenza.year
         )
 
-        # Prima proviamo attributi/data-value più affidabili.
+        # ====================================================
+        # ATTRIBUTI PRECISI
+        # ====================================================
+
         selettori_precisi = [
             f"[data-date='{data_partenza.isoformat()}']:visible",
             f"[data-value='{data_partenza.isoformat()}']:visible",
@@ -1126,8 +1206,10 @@ class VoloteaScanner(BaseScanner):
             except Exception:
                 continue
 
-        # Poi analizziamo gli elementi del calendario
-        # verificando giorno + mese + anno nel testo/aria-label.
+        # ====================================================
+        # ANALISI CALENDARIO
+        # ====================================================
+
         elementi_calendario = page.locator(
             "button:visible, "
             "[role='button']:visible, "
@@ -1158,6 +1240,7 @@ class VoloteaScanner(BaseScanner):
                         )
                         or ""
                     )
+
                 except Exception:
                     pass
 
@@ -1172,8 +1255,6 @@ class VoloteaScanner(BaseScanner):
                     valore
                 )
 
-                # Se il valore contiene una data ISO,
-                # possiamo confrontarla direttamente.
                 if (
                     data_partenza.isoformat()
                     in valore
@@ -1195,8 +1276,6 @@ class VoloteaScanner(BaseScanner):
 
                     return True
 
-                # Match testuale più prudente:
-                # giorno + mese + anno.
                 if (
                     giorno in valore_upper
                     and mese in valore_upper
@@ -1226,10 +1305,10 @@ class VoloteaScanner(BaseScanner):
                 repr(exc),
             )
 
-        # Ultimo fallback: cerchiamo un elemento che
-        # rappresenti esattamente il giorno, ma solo se
-        # il calendario visualizzato è sicuramente quello
-        # del mese richiesto.
+        # ====================================================
+        # FALLBACK
+        # ====================================================
+
         try:
 
             testo_calendario = page.locator(
@@ -1238,7 +1317,10 @@ class VoloteaScanner(BaseScanner):
 
             mese_anno_presenti = (
                 mese in testo_calendario
-                or data_partenza.strftime("%B").lower()
+                or
+                data_partenza.strftime(
+                    "%B"
+                ).lower()
                 in testo_calendario.lower()
             )
 
@@ -1259,9 +1341,11 @@ class VoloteaScanner(BaseScanner):
                     if not elemento.is_visible():
                         continue
 
-                    testo = self.ottieni_testo_elemento(
-                        elemento
-                    ).strip()
+                    testo = (
+                        self.ottieni_testo_elemento(
+                            elemento
+                        ).strip()
+                    )
 
                     if testo != giorno:
                         continue
@@ -1479,6 +1563,7 @@ class VoloteaScanner(BaseScanner):
             page,
             data_partenza,
         ):
+
             print(
                 f"[volotea] data non selezionata: "
                 f"{data_partenza.isoformat()}"
@@ -1598,7 +1683,7 @@ class VoloteaScanner(BaseScanner):
         # AEROPORTI DI PARTENZA
         # ====================================================
 
-        origini = []
+        origini: list[str] = []
 
         for origine in self.origini:
 
@@ -1621,7 +1706,9 @@ class VoloteaScanner(BaseScanner):
 
         print(
             "[volotea] aeroporti di partenza configurati:",
-            ", ".join(origini) if origini else "nessuno",
+            ", ".join(origini)
+            if origini
+            else "nessuno",
         )
 
         if not origini:
@@ -1665,7 +1752,7 @@ class VoloteaScanner(BaseScanner):
                 )
 
                 # ============================================
-                # 1. DISCOVERY SOLO DEGLI AEROPORTI SELEZIONATI
+                # 1. DISCOVERY DELLE ROTTE
                 # ============================================
 
                 rotte: dict[str, list[str]] = {}
@@ -1724,10 +1811,16 @@ class VoloteaScanner(BaseScanner):
                         except Exception:
                             pass
 
+                # ============================================
+                # RIEPILOGO
+                # ============================================
+
                 print("")
                 print(
                     "[volotea] riepilogo rotte selezionate:"
                 )
+
+                totale_rotte = 0
 
                 for origine, destinazioni in rotte.items():
 
@@ -1736,11 +1829,32 @@ class VoloteaScanner(BaseScanner):
                         f"{len(destinazioni)} destinazioni"
                     )
 
+                    totale_rotte += len(
+                        destinazioni
+                    )
+
+                print(
+                    "[volotea] totale rotte dirette da scannerizzare:",
+                    totale_rotte,
+                )
+
                 # ============================================
                 # 2. RICERCA VOLI
                 # ============================================
 
                 for origine, destinazioni in rotte.items():
+
+                    # Se Volotea non ha riconosciuto l'aeroporto
+                    # o non ha restituito rotte, NON viene eseguita
+                    # nessuna ricerca.
+                    if not destinazioni:
+
+                        print(
+                            f"[volotea] nessuna rotta disponibile "
+                            f"da {origine}: aeroporto saltato."
+                        )
+
+                        continue
 
                     for destinazione in destinazioni:
 
@@ -1916,28 +2030,3 @@ class VoloteaScanner(BaseScanner):
         )
 
         return offerte
-
-
-# ============================================================
-# FUNZIONI DI SUPPORTO FINALI
-# ============================================================
-
-def codigo_gia_presente(
-    valori: list[str],
-    codice: str,
-) -> bool:
-    """Controlla se un codice IATA è già presente."""
-
-    return codice in valori
-
-
-def valor_normalizzato(
-    valore: str,
-) -> str:
-    """Normalizza un valore testuale per i confronti."""
-
-    return re.sub(
-        r"\s+",
-        " ",
-        valore.upper(),
-    )
