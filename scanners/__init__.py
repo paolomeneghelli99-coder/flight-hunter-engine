@@ -1,3 +1,4 @@
+```python
 """Registro degli scanner attivi."""
 
 from scanners.base import BaseScanner, Offerta
@@ -16,3 +17,4 @@ __all__ = [
     "Offerta",
     "SCANNERS",
 ]
+```
