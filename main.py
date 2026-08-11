@@ -14,9 +14,7 @@ def main() -> int:
 
     settings.validate()
 
-
     tutte = []
-
 
     for nome, factory in SCANNERS.items():
 
@@ -32,7 +30,6 @@ def main() -> int:
 
             tutte.extend(trovate)
 
-
         except Exception:
 
             print(
@@ -42,8 +39,6 @@ def main() -> int:
 
             traceback.print_exc()
 
-
-
     if not tutte:
 
         print(
@@ -52,58 +47,46 @@ def main() -> int:
 
         return 0
 
+    # ========================================================
+    # DEDUPLICA GLOBALE
+    # ========================================================
 
-
-    # deduplica globale
     viste = set()
 
     uniche = []
 
-
     for o in tutte:
 
         chiave = (
-
             o.aeroporto_partenza,
-
             o.aeroporto_arrivo,
-
             o.destinazione,
-
             o.data_partenza,
-
             o.prezzo
-
         )
 
-
         if chiave in viste:
-
             continue
-
 
         viste.add(chiave)
 
         uniche.append(o)
 
-
-
     uniche.sort(
-        key=lambda o:
-        o.prezzo
+        key=lambda o: o.prezzo
     )
 
-
+    # ========================================================
+    # RICERCA VOLI DI RITORNO
+    # ========================================================
 
     print(
         "Ricerca ritorni Ryanair in corso..."
     )
 
-
     connector = BaseConnector(
         nome="returns"
     )
-
 
     try:
 
@@ -112,42 +95,35 @@ def main() -> int:
             connector
         )
 
-
     finally:
 
         connector.close()
-
-
 
     tot_ritorni = sum(
         len(o.ritorni)
         for o in uniche
     )
 
-
     print(
         f"Ritorni trovati: {tot_ritorni}"
     )
 
-
+    # ========================================================
+    # IMPORTAZIONE
+    # ========================================================
 
     totale = import_offers(
-
         [
             o.to_payload()
             for o in uniche
         ]
-
     )
-
 
     print(
         f"Totale offerte importate: {totale}"
     )
 
-
     return 0
-
 
 
 if __name__ == "__main__":
