@@ -1,0 +1,92 @@
+name: Test fast-flights (Volotea su Google Flights)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Verifica se Volotea compare su Google Flights
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Installa fast-flights
+        run: |
+          set -e
+          python -m pip install --upgrade pip
+          python -m pip install fast-flights
+
+      - name: Esegui ricerche di test
+        run: |
+          set -e
+
+          python - <<'PY'
+          from fast_flights import FlightData, Passengers, create_filter, get_flights
+
+          # Rotte note dalla discovery Volotea, con partenza tra ~30 giorni
+          rotte_test = [
+              ("VRN", "PRG", "2026-09-15"),
+              ("VCE", "BCN", "2026-09-15"),
+              ("BLQ", "ATH", "2026-09-15"),
+              ("TRN", "NAP", "2026-09-15"),
+          ]
+
+          for origine, destinazione, data in rotte_test:
+
+              print("")
+              print("=" * 60)
+              print(f"ROTTA: {origine} -> {destinazione} il {data}")
+              print("=" * 60)
+
+              try:
+                  filtro = create_filter(
+                      flight_data=[
+                          FlightData(
+                              date=data,
+                              from_airport=origine,
+                              to_airport=destinazione,
+                          ),
+                      ],
+                      trip="one-way",
+                      seat="economy",
+                      passengers=Passengers(adults=1),
+                  )
+
+                  risultato = get_flights(filtro)
+
+                  if not risultato.flights:
+                      print("Nessun volo restituito da Google Flights.")
+                      continue
+
+                  trovato_volotea = False
+
+                  for volo in risultato.flights:
+                      nome = getattr(volo, "name", "")
+                      prezzo = getattr(volo, "price", "")
+
+                      marcatore = ""
+                      if "volotea" in nome.lower():
+                          marcatore = "  <-- VOLOTEA TROVATA"
+                          trovato_volotea = True
+
+                      print(f"  {nome} - {prezzo}{marcatore}")
+
+                  if not trovato_volotea:
+                      print(">>> Volotea NON presente tra i risultati per questa rotta.")
+
+              except Exception as exc:
+                  print(f"ERRORE nella ricerca {origine}->{destinazione}: {exc!r}")
+
+          print("")
+          print("=" * 60)
+          print("TEST COMPLETATO")
+          print("=" * 60)
+          PY
