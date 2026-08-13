@@ -15,6 +15,33 @@ Le destinazioni indicate da Volotea come "Connection" vengono
 escluse perché non rappresentano un collegamento diretto.
 
 La struttura delle offerte prodotte è compatibile con scanners.base.
+
+============================================================
+NOTE VERSIONE (fix diagnosi "0 voli trovati")
+============================================================
+Rispetto alla versione precedente:
+
+1. trova_pulsante_ricerca() ora privilegia i veri pulsanti
+   type="submit" ed esclude esplicitamente elementi dentro
+   <header>/<nav>, per evitare di cliccare un CTA sbagliato
+   nella pagina invece del vero pulsante del widget di ricerca.
+
+2. Nuovo metodo seleziona_solo_andata(): tentativo best-effort
+   di impostare la ricerca in modalità "solo andata", nel caso
+   il motore richieda una data di ritorno per poter sottomettere
+   la ricerca. Se non trova alcun controllo simile non fa nulla.
+
+3. seleziona_data(): il ramo di fallback (match sul solo numero
+   del giorno) ora tenta di disambiguare il mese corretto tramite
+   le intestazioni mese/anno visibili nel calendario. Se non riesce
+   a confermare il mese, fallisce esplicitamente invece di rischiare
+   un click sulla data sbagliata. Dopo ogni selezione riuscita viene
+   riletto e loggato il valore effettivo del campo data.
+
+4. esegui_ricerca(): logging diagnostico aggiuntivo su URL
+   prima/dopo il click sul pulsante di ricerca e su presenza/assenza
+   di una risposta di rete intercettata sui path di ricerca.
+============================================================
 """
 
 from __future__ import annotations
@@ -52,6 +79,29 @@ PAGE_LOAD_WAIT_MS = 8000
 AIRPORT_WAIT_MS = 1500
 DATE_WAIT_MS = 1000
 SEARCH_WAIT_MS = 15000
+
+NOMI_MESE = {
+    1: ("january", "gennaio"),
+    2: ("february", "febbraio"),
+    3: ("march", "marzo"),
+    4: ("april", "aprile"),
+    5: ("may", "maggio"),
+    6: ("june", "giugno"),
+    7: ("july", "luglio"),
+    8: ("august", "agosto"),
+    9: ("september", "settembre"),
+    10: ("october", "ottobre"),
+    11: ("november", "novembre"),
+    12: ("december", "dicembre"),
+}
+
+PATTERN_INTESTAZIONE_MESE = re.compile(
+    r"^(January|February|March|April|May|June|July|August|September|"
+    r"October|November|December|"
+    r"Gennaio|Febbraio|Marzo|Aprile|Maggio|Giugno|Luglio|Agosto|"
+    r"Settembre|Ottobre|Novembre|Dicembre)\s+\d{4}$",
+    re.I,
+)
 
 
 # ============================================================
@@ -435,6 +485,17 @@ def destinazione_ha_connection(
     )
 
 
+def mese_atteso_testi(data_partenza: date) -> list[str]:
+    """Restituisce le possibili intestazioni mese/anno attese (EN + IT)."""
+
+    nomi = NOMI_MESE.get(data_partenza.month, ())
+
+    return [
+        f"{nome} {data_partenza.year}".lower()
+        for nome in nomi
+    ]
+
+
 # ============================================================
 # SCANNER VOLOTEA
 # ============================================================
@@ -640,6 +701,79 @@ class VoloteaScanner(BaseScanner):
 
             except Exception:
                 continue
+
+    # ========================================================
+    # MODALITA' SOLO ANDATA (best-effort)
+    # ========================================================
+
+    def seleziona_solo_andata(
+        self,
+        page: Page,
+    ) -> None:
+        """Tenta di impostare la ricerca in modalità solo andata.
+
+        Se Volotea è di default in modalità andata/ritorno, la mancanza
+        di una data di ritorno potrebbe impedire il submit della ricerca
+        (pulsante disabilitato, validazione bloccante, ecc.).
+
+        Questo tentativo è puramente difensivo: se non trova alcun
+        controllo compatibile non fa nulla e il flusso prosegue
+        normalmente come prima.
+        """
+
+        selettori = [
+            "text=/^\\s*One\\s*way\\s*$/i",
+            "text=/^\\s*Solo\\s*andata\\s*$/i",
+            "text=/^\\s*S[oó]lo\\s*ida\\s*$/i",
+            "[data-testid*='oneway' i]:visible",
+            "[data-testid*='one-way' i]:visible",
+            "input[value='oneway' i]",
+            "input[value='one_way' i]",
+            "label:has-text('One way'):visible",
+            "label:has-text('Solo andata'):visible",
+        ]
+
+        for selettore in selettori:
+
+            try:
+
+                elementi = page.locator(
+                    selettore
+                )
+
+                count = elementi.count()
+
+                for i in range(count):
+
+                    elemento = elementi.nth(i)
+
+                    if not elemento.is_visible():
+                        continue
+
+                    elemento.click(
+                        force=True,
+                        timeout=3000,
+                    )
+
+                    page.wait_for_timeout(
+                        500
+                    )
+
+                    print(
+                        "[volotea] modalità 'solo andata' impostata "
+                        "tramite selettore:",
+                        selettore,
+                    )
+
+                    return
+
+            except Exception:
+                continue
+
+        print(
+            "[volotea] nessun controllo 'solo andata' trovato "
+            "(potrebbe non essere necessario o non presente)."
+        )
 
     # ========================================================
     # SELETTORE AEROPORTI
@@ -1104,6 +1238,114 @@ class VoloteaScanner(BaseScanner):
 
         return None
 
+    def leggi_valore_campo_data(
+        self,
+        page: Page,
+    ) -> str:
+        """Legge il valore/testo attualmente mostrato nel campo data.
+
+        Usato solo a scopo diagnostico dopo una selezione, per
+        confermare nel log cosa è realmente impostato nel form.
+        """
+
+        campo = self.trova_campo_data(
+            page
+        )
+
+        if campo is None:
+            return ""
+
+        valore = ""
+
+        try:
+            valore = campo.input_value(
+                timeout=2000
+            )
+        except Exception:
+            pass
+
+        if not valore:
+
+            try:
+                valore = (
+                    campo.get_attribute(
+                        "value"
+                    )
+                    or ""
+                )
+            except Exception:
+                pass
+
+        if not valore:
+
+            try:
+                valore = self.ottieni_testo_elemento(
+                    campo
+                )
+            except Exception:
+                pass
+
+        return valore
+
+    def _intestazioni_mese_visibili(
+        self,
+        page: Page,
+    ) -> list[dict]:
+        """Individua le intestazioni mese/anno visibili nel calendario.
+
+        Best-effort: usato per capire a quale blocco/mese appartiene
+        una cella-giorno, quando il calendario mostra più mesi
+        contemporaneamente (pattern comune nei date-picker A/R).
+        """
+
+        risultati: list[dict] = []
+
+        try:
+
+            elementi = page.get_by_text(
+                PATTERN_INTESTAZIONE_MESE
+            )
+
+            count = elementi.count()
+
+            for i in range(count):
+
+                elemento = elementi.nth(i)
+
+                if not elemento.is_visible():
+                    continue
+
+                try:
+                    box = elemento.bounding_box()
+                except Exception:
+                    box = None
+
+                if not box:
+                    continue
+
+                testo = self.ottieni_testo_elemento(
+                    elemento
+                )
+
+                if not testo:
+                    continue
+
+                risultati.append(
+                    {
+                        "testo": testo.strip().lower(),
+                        "top": box["y"],
+                    }
+                )
+
+        except Exception:
+            pass
+
+        risultati.sort(
+            key=lambda h: h["top"]
+        )
+
+        return risultati
+
     def seleziona_data(
         self,
         page: Page,
@@ -1196,6 +1438,16 @@ class VoloteaScanner(BaseScanner):
                         800
                     )
 
+                    valore_letto = self.leggi_valore_campo_data(
+                        page
+                    )
+
+                    print(
+                        "[volotea] valore campo data dopo la "
+                        "selezione (attributo preciso):",
+                        repr(valore_letto),
+                    )
+
                     print(
                         "[volotea] data selezionata tramite attributo preciso:",
                         data_partenza.isoformat(),
@@ -1269,6 +1521,16 @@ class VoloteaScanner(BaseScanner):
                         800
                     )
 
+                    valore_letto = self.leggi_valore_campo_data(
+                        page
+                    )
+
+                    print(
+                        "[volotea] valore campo data dopo la "
+                        "selezione (analisi calendario, ISO):",
+                        repr(valore_letto),
+                    )
+
                     print(
                         "[volotea] data selezionata:",
                         data_partenza.isoformat(),
@@ -1291,6 +1553,16 @@ class VoloteaScanner(BaseScanner):
                         800
                     )
 
+                    valore_letto = self.leggi_valore_campo_data(
+                        page
+                    )
+
+                    print(
+                        "[volotea] valore campo data dopo la "
+                        "selezione (analisi calendario, gg/mm/aaaa):",
+                        repr(valore_letto),
+                    )
+
                     print(
                         "[volotea] data selezionata:",
                         data_partenza.isoformat(),
@@ -1306,7 +1578,7 @@ class VoloteaScanner(BaseScanner):
             )
 
         # ====================================================
-        # FALLBACK
+        # FALLBACK (con disambiguazione del mese)
         # ====================================================
 
         try:
@@ -1332,6 +1604,18 @@ class VoloteaScanner(BaseScanner):
                     "[role='gridcell']:visible"
                 )
 
+                intestazioni = self._intestazioni_mese_visibili(
+                    page
+                )
+
+                testi_mese_atteso = mese_atteso_testi(
+                    data_partenza
+                )
+
+                candidati_validi = []
+
+                occorrenze_giorno = 0
+
                 for i in range(
                     elementi.count()
                 ):
@@ -1339,6 +1623,25 @@ class VoloteaScanner(BaseScanner):
                     elemento = elementi.nth(i)
 
                     if not elemento.is_visible():
+                        continue
+
+                    try:
+
+                        disabilitato = (
+                            elemento.get_attribute(
+                                "aria-disabled"
+                            )
+                            == "true"
+                            or elemento.get_attribute(
+                                "disabled"
+                            )
+                            is not None
+                        )
+
+                    except Exception:
+                        disabilitato = False
+
+                    if disabilitato:
                         continue
 
                     testo = (
@@ -1350,13 +1653,99 @@ class VoloteaScanner(BaseScanner):
                     if testo != giorno:
                         continue
 
-                    elemento.click(
+                    occorrenze_giorno += 1
+
+                    mese_confermato = False
+
+                    if intestazioni:
+
+                        try:
+                            box = elemento.bounding_box()
+                        except Exception:
+                            box = None
+
+                        if box:
+
+                            header_corrente = None
+
+                            for intestazione in intestazioni:
+
+                                if (
+                                    intestazione["top"]
+                                    <= box["y"]
+                                ):
+                                    header_corrente = intestazione
+                                else:
+                                    break
+
+                            if (
+                                header_corrente
+                                and header_corrente["testo"]
+                                in testi_mese_atteso
+                            ):
+                                mese_confermato = True
+
+                    else:
+
+                        # Nessuna intestazione trovata: non possiamo
+                        # verificare il mese. Se questa è l'unica
+                        # cella con questo numero di giorno, la
+                        # accettiamo comunque; se ce ne sono più di
+                        # una restiamo prudenti (vedi sotto).
+                        mese_confermato = True
+
+                    if mese_confermato:
+                        candidati_validi.append(
+                            elemento
+                        )
+
+                if occorrenze_giorno > 1:
+
+                    print(
+                        f"[volotea] {occorrenze_giorno} celle con "
+                        f"giorno '{giorno}' trovate nel calendario; "
+                        f"{len(candidati_validi)} confermate nel mese "
+                        "corretto."
+                    )
+
+                if (
+                    not intestazioni
+                    and occorrenze_giorno > 1
+                ):
+
+                    # Ambiguità reale e non risolvibile: meglio
+                    # fallire esplicitamente che rischiare la data
+                    # sbagliata.
+                    print(
+                        "[volotea] ATTENZIONE: giorno ambiguo "
+                        "(più celle, nessuna intestazione mese "
+                        "trovata per disambiguare) - selezione "
+                        "annullata."
+                    )
+
+                    candidati_validi = []
+
+                if candidati_validi:
+
+                    elemento_da_cliccare = candidati_validi[0]
+
+                    elemento_da_cliccare.click(
                         force=True,
                         timeout=5000,
                     )
 
                     page.wait_for_timeout(
                         800
+                    )
+
+                    valore_letto = self.leggi_valore_campo_data(
+                        page
+                    )
+
+                    print(
+                        "[volotea] valore campo data dopo la "
+                        "selezione (fallback):",
+                        repr(valore_letto),
                     )
 
                     print(
@@ -1366,8 +1755,12 @@ class VoloteaScanner(BaseScanner):
 
                     return True
 
-        except Exception:
-            pass
+        except Exception as exc:
+
+            print(
+                "[volotea] errore selezione fallback:",
+                repr(exc),
+            )
 
         print(
             "[volotea] data NON selezionata:",
@@ -1384,8 +1777,57 @@ class VoloteaScanner(BaseScanner):
         self,
         page: Page,
     ):
-        """Trova il pulsante di ricerca."""
+        """Trova il pulsante di ricerca.
 
+        Privilegia i veri pulsanti type="submit" ed esclude
+        esplicitamente elementi dentro <header>/<nav>, per evitare
+        di intercettare un CTA generico della pagina invece del
+        vero pulsante del widget di ricerca voli.
+        """
+
+        def fuori_dal_widget(elemento) -> bool:
+
+            try:
+                return bool(
+                    elemento.evaluate(
+                        "el => !!el.closest('header, nav')"
+                    )
+                )
+            except Exception:
+                return False
+
+        # 1) Pulsanti submit reali (i più affidabili)
+        try:
+
+            submits = page.locator(
+                "button[type='submit']:visible, "
+                "input[type='submit']:visible"
+            )
+
+            for i in range(
+                submits.count()
+            ):
+
+                elemento = submits.nth(i)
+
+                if not elemento.is_visible():
+                    continue
+
+                if fuori_dal_widget(
+                    elemento
+                ):
+                    continue
+
+                print(
+                    "[volotea] pulsante ricerca (type=submit) trovato."
+                )
+
+                return elemento
+
+        except Exception:
+            pass
+
+        # 2) Pulsanti testuali, escludendo header/nav
         pattern = re.compile(
             r"search\s*flights|"
             r"buscar\s*vuelos|"
@@ -1414,12 +1856,30 @@ class VoloteaScanner(BaseScanner):
                     button
                 )
 
-                if pattern.search(testo):
-                    return button
+                if not pattern.search(testo):
+                    continue
+
+                if fuori_dal_widget(
+                    button
+                ):
+                    print(
+                        "[volotea] bottone escluso "
+                        "(dentro header/nav):",
+                        repr(testo),
+                    )
+                    continue
+
+                print(
+                    "[volotea] pulsante ricerca (testo) trovato:",
+                    repr(testo),
+                )
+
+                return button
 
         except Exception:
             pass
 
+        # 3) Fallback finale (comportamento originale)
         try:
 
             elementi = page.get_by_text(
@@ -1433,6 +1893,12 @@ class VoloteaScanner(BaseScanner):
                 elemento = elementi.nth(i)
 
                 if elemento.is_visible():
+
+                    print(
+                        "[volotea] pulsante ricerca "
+                        "(fallback get_by_text) trovato."
+                    )
+
                     return elemento
 
         except Exception:
@@ -1540,6 +2006,10 @@ class VoloteaScanner(BaseScanner):
             page
         )
 
+        self.seleziona_solo_andata(
+            page
+        )
+
         if not self.apri_selettore_aeroporti(
             page
         ):
@@ -1585,6 +2055,8 @@ class VoloteaScanner(BaseScanner):
 
             return []
 
+        url_prima_del_click = page.url
+
         try:
 
             pulsante.click(
@@ -1610,13 +2082,42 @@ class VoloteaScanner(BaseScanner):
                 return []
 
         page.wait_for_timeout(
-            SEARCH_WAIT_MS
+            1500
+        )
+
+        print(
+            "[volotea] URL dopo il click sul pulsante ricerca:",
+            page.url,
+        )
+
+        if page.url == url_prima_del_click:
+
+            print(
+                "[volotea] ATTENZIONE: l'URL non è cambiato dopo "
+                "il click sul pulsante ricerca (possibile pulsante "
+                "errato o submit non avvenuto)."
+            )
+
+        page.wait_for_timeout(
+            max(
+                SEARCH_WAIT_MS - 1500,
+                0,
+            )
         )
 
         if not risposta_json:
 
             page.wait_for_timeout(
                 SEARCH_WAIT_MS
+            )
+
+        if not risposta_json:
+
+            print(
+                f"[volotea] nessuna risposta di ricerca intercettata "
+                f"per {origine} -> {destinazione} "
+                f"(nessuna chiamata verso "
+                f"{' o '.join(SEARCH_PATHS)})."
             )
 
         risultati: list[
